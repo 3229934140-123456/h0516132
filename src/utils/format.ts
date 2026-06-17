@@ -105,3 +105,45 @@ export const truncateText = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text
   return `${text.slice(0, maxLength)}...`
 }
+
+export interface CSVHeader<T> {
+  key: keyof T | string
+  label: string
+}
+
+export const exportToCSV = <T>(
+  data: T[],
+  headers: CSVHeader<T>[],
+  filename: string,
+): void => {
+  const escapeCSV = (value: unknown): string => {
+    if (value === null || value === undefined) return ''
+    const str = String(value)
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
+  const headerRow = headers.map((h) => escapeCSV(h.label)).join(',')
+  const dataRows = data.map((row) =>
+    headers.map((h) => {
+      const key = h.key as keyof T
+      return escapeCSV(row[key])
+    }).join(','),
+  )
+  const csvContent = [headerRow, ...dataRows].join('\r\n')
+
+  const BOM = '\uFEFF'
+  const blob = new Blob([BOM + csvContent], { type: 'text/csv;charset=utf-8;' })
+
+  const link = document.createElement('a')
+  const url = URL.createObjectURL(blob)
+  link.setAttribute('href', url)
+  link.setAttribute('download', filename)
+  link.style.visibility = 'hidden'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}

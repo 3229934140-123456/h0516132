@@ -95,6 +95,26 @@ export interface PaymentRecordWithDetails {
   clientName?: string
 }
 
+export interface ReminderRecord {
+  id: string
+  paymentTermId: string
+  type: 'email' | 'wechat' | 'phone' | 'other'
+  content: string
+  createdAt: string
+}
+
+export interface PaymentTermDetail {
+  term: PaymentTermWithDetails
+  invoices: Array<{
+    invoiceStatus: 'uninvoiced' | 'invoiced' | 'partial_invoiced'
+    invoiceAmount?: number
+    invoiceDate?: string
+    invoiceNo?: string
+  }>
+  paymentRecords: PaymentRecordWithDetails[]
+  reminders: ReminderRecord[]
+}
+
 export interface ProjectFile {
   id: string
   projectId: string
@@ -105,6 +125,9 @@ export interface ProjectFile {
   type: 'requirement' | 'deliverable' | 'other'
   uploadedBy: string
   uploadedAt: string
+  version?: string
+  isFinal?: boolean
+  remark?: string
 }
 
 export interface Statistics {
@@ -183,6 +206,7 @@ interface DataState {
   fetchProjectFiles: (projectId: string) => Promise<void>
   uploadProjectFile: (projectId: string, fileData: Omit<ProjectFile, 'id' | 'projectId' | 'uploadedAt'>) => Promise<boolean>
   deleteProjectFile: (projectId: string, fileId: string) => Promise<boolean>
+  updateProjectFile: (projectId: string, fileId: string, data: Partial<Pick<ProjectFile, 'name' | 'version' | 'isFinal' | 'remark'>>) => Promise<boolean>
   fetchStatistics: () => Promise<void>
   fetchAll: () => Promise<void>
   fetchContractByToken: (token: string) => Promise<ContractWithDetails | null>
@@ -197,6 +221,8 @@ interface DataState {
     invoiceDate?: string
     invoiceNo?: string
   }) => Promise<boolean>
+  fetchPaymentTermDetail: (termId: string) => Promise<PaymentTermDetail | null>
+  createReminder: (termId: string, data: { type: 'email' | 'wechat' | 'phone' | 'other'; content: string }) => Promise<boolean>
 }
 
 export const useStore = create<DataState & UIState>((set, get) => ({
@@ -348,6 +374,22 @@ export const useStore = create<DataState & UIState>((set, get) => ({
     }
   },
 
+  updateProjectFile: async (projectId, fileId, data) => {
+    try {
+      const res = await fetch(`/api/projects/files/${fileId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('更新文件失败')
+      await get().fetchProjectFiles(projectId)
+      return true
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return false
+    }
+  },
+
   fetchStatistics: async () => {
     set({ loading: true, error: null })
     try {
@@ -471,6 +513,33 @@ export const useStore = create<DataState & UIState>((set, get) => ({
       })
       if (!res.ok) throw new Error('更新开票信息失败')
       await get().fetchPaymentTerms()
+      return true
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return false
+    }
+  },
+
+  fetchPaymentTermDetail: async (termId) => {
+    try {
+      const res = await fetch(`/api/contracts/payment-terms/${termId}/detail`)
+      if (!res.ok) throw new Error('获取付款节点详情失败')
+      const result = await res.json()
+      return result.success && result.data ? result.data : null
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return null
+    }
+  },
+
+  createReminder: async (termId, data) => {
+    try {
+      const res = await fetch(`/api/contracts/payment-terms/${termId}/reminder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('创建催款记录失败')
       return true
     } catch (err) {
       set({ error: err instanceof Error ? err.message : '未知错误' })

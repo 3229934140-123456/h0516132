@@ -248,4 +248,37 @@ router.delete('/files/:fileId', async (req: Request, res: Response): Promise<voi
   }
 })
 
+router.put('/files/:fileId', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { fileId } = req.params
+    const file = db.getProjectFileById(fileId)
+    if (!file) {
+      res.status(404).json({
+        success: false,
+        error: '文件不存在',
+      })
+      return
+    }
+    const data = req.body as Partial<Pick<ProjectFile, 'name' | 'version' | 'isFinal' | 'remark'>>
+    const updated = db.updateProjectFile(fileId, data)
+    if (!updated) {
+      res.status(404).json({
+        success: false,
+        error: '文件不存在',
+      })
+      return
+    }
+    res.json({
+      success: true,
+      data: updated,
+      message: '文件更新成功',
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: '更新文件失败',
+    })
+  }
+})
+
 export default router

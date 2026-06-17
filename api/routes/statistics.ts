@@ -291,4 +291,177 @@ router.get('/receivable-list', async (req: Request, res: Response): Promise<void
   }
 })
 
+router.get('/reconciliation', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { month } = req.query
+    const monthStr = month as string | undefined
+
+    const isInMonth = (dateStr?: string): boolean => {
+      if (!monthStr || !dateStr) return true
+      const d = new Date(dateStr)
+      const y = d.getFullYear()
+      const m = String(d.getMonth() + 1).padStart(2, '0')
+      return `${y}-${m}` === monthStr
+    }
+
+    const paymentTerms = db.getPaymentTerms()
+    const paymentRecords = db.getPaymentRecords()
+    const clients = db.getClients()
+    const contracts = db.getContracts()
+
+    const filteredTerms = paymentTerms.filter((t) => {
+      if (!monthStr) return true
+      return isInMonth(t.invoiceDate) || paymentRecords.some((r) => r.paymentTermId === t.id && isInMonth(r.paymentDate))
+    })
+
+    const filteredRecords = paymentRecords.filter((r) => isInMonth(r.paymentDate))
+
+    const termRecordsMap = new Map<string, number>()
+    filteredRecords.forEach((r) => {
+      if (r.paymentTermId) {
+        termRecordsMap.set(r.paymentTermId, (termRecordsMap.get(r.paymentTermId) || 0) + r.amount)
+      }
+    })
+
+    const byTerm = filteredTerms.map((t) => {
+      const contract = db.getContractById(t.contractId)
+      const client = contract ? db.getClientById(contract.clientId) : undefined
+      const paidAmount = termRecordsMap.get(t.id) || t.paidAmount || 0
+      const remainingAmount = t.amount - paidAmount
+
+      let invoicedUnpaid = 0
+      let uninvoicedPaid = 0
+      let partialReceived = 0
+
+      const invoiceAmount = t.invoiceAmount || 0
+      if (t.invoiceStatus === 'invoiced' || t.invoiceStatus === 'partial_invoiced') {
+        if (paidAmount < invoiceAmount) {
+          invoicedUnpaid = invoiceAmount - paidAmount
+        }
+      }
+      if ((!t.invoiceStatus || t.invoiceStatus === 'uninvoiced') && paidAmount > 0) {
+        uninvoicedPaid = paidAmount
+      }
+      if (paidAmount > 0 && paidAmount < t.amount) {
+        partialReceived = paidAmount
+      }
+
+      return {
+        termId: t.id,
+        termNo: t.termNo,
+        description: t.description,
+        contractNo: contract?.contractNo,
+        clientName: client?.name,
+        invoiceStatus: t.invoiceStatus,
+        invoiceAmount: t.invoiceAmount || 0,
+        invoiceDate: t.invoiceDate,
+        invoiceNo: t.invoiceNo,
+        termAmount: t.amount,
+        paidAmount,
+        remainingAmount,
+        status: t.status,
+        invoicedUnpaid,
+        uninvoicedPaid,
+        partialReceived,
+      }
+    })
+
+    const contractMap = new Map<string, {
+      contractId: string
+      contractNo: string
+      contractName: string
+      clientName: string
+      invoicedAmount: number
+      receivedAmount: number
+      invoicedUnpaid: number
+      uninvoicedPaid: number
+      partialReceived: number
+    }>()
+
+    byTerm.forEach((t) => {
+      const contract = contracts.find((c) => c.contractNo === t.contractNo)
+      if (!contract) return
+      if (!contractMap.has(contract.id)) {
+        const client = clients.find((c) => c.id === contract.clientId)
+        contractMap.set(contract.id, {
+          contractId: contract.id,
+          contractNo: contract.contractNo,
+          contractName: contract.name,
+          clientName: client?.name || '',
+          invoicedAmount: 0,
+          receivedAmount: 0,
+          invoicedUnpaid: 0,
+          uninvoicedPaid: 0,
+          partialReceived: 0,
+        })
+      }
+      const entry = contractMap.get(contract.id)!
+      entry.invoicedAmount += t.invoiceAmount
+      entry.receivedAmount += t.paidAmount
+      entry.invoicedUnpaid += t.invoicedUnpaid
+      entry.uninvoicedPaid += t.uninvoicedPaid
+      entry.partialReceived += t.partialReceived
+    })
+
+    const byContract = Array.from(contractMap.values())
+
+    const clientMap = new Map<string, {
+      clientId: string
+      clientName: string
+      invoicedAmount: number
+      receivedAmount: number
+      invoicedUnpaid: number
+      uninvoicedPaid: number
+      partialReceived: number
+    }>()
+
+    byContract.forEach((c) => {
+      const client = clients.find((cl) => cl.name === c.clientName)
+      const clientId = client?.id || c.clientName
+      if (!clientMap.has(clientId)) {
+        clientMap.set(clientId, {
+          clientId,
+          clientName: c.clientName,
+          invoicedAmount: 0,
+          receivedAmount: 0,
+          invoicedUnpaid: 0,
+          uninvoicedPaid: 0,
+          partialReceived: 0,
+        })
+      }
+      const entry = clientMap.get(clientId)!
+      entry.invoicedAmount += c.invoicedAmount
+      entry.receivedAmount += c.receivedAmount
+      entry.invoicedUnpaid += c.invoicedUnpaid
+      entry.uninvoicedPaid += c.uninvoicedPaid
+      entry.partialReceived += c.partialReceived
+    })
+
+    const byClient = Array.from(clientMap.values())
+
+    const summary = {
+      totalInvoiced: byClient.reduce((sum, c) => sum + c.invoicedAmount, 0),
+      totalReceived: byClient.reduce((sum, c) => sum + c.receivedAmount, 0),
+      invoicedUnpaid: byClient.reduce((sum, c) => sum + c.invoicedUnpaid, 0),
+      uninvoicedPaid: byClient.reduce((sum, c) => sum + c.uninvoicedPaid, 0),
+      partialReceived: byClient.reduce((sum, c) => sum + c.partialReceived, 0),
+    }
+
+    res.json({
+      success: true,
+      data: {
+        summary,
+        byClient,
+        byContract,
+        byTerm,
+      },
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: '获取对账数据失败',
+    })
+  }
+})
+
 export default router

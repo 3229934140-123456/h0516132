@@ -72,9 +72,9 @@ export default function ContractList() {
 
   const getPaymentProgress = (contractId: string, totalAmount: number) => {
     const contractPayments = paymentTerms.filter(
-      (p) => p.contractId === contractId && p.status === 'paid'
+      (p) => p.contractId === contractId
     )
-    const paidAmount = contractPayments.reduce((sum, p) => sum + p.paidAmount, 0)
+    const paidAmount = contractPayments.reduce((sum, p) => sum + (p.paidAmount || 0), 0)
     const percentage = totalAmount > 0 ? Math.round((paidAmount / totalAmount) * 100) : 0
     return { paidAmount, percentage }
   }

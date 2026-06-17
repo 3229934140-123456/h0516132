@@ -70,6 +70,9 @@ export interface ProjectFile {
   type: 'requirement' | 'deliverable' | 'other'
   uploadedBy: string
   uploadedAt: string
+  version?: string
+  isFinal?: boolean
+  remark?: string
 }
 
 export interface PaymentRecord {
@@ -81,6 +84,14 @@ export interface PaymentRecord {
   paymentMethod: 'bank_transfer' | 'cash' | 'check' | 'other'
   referenceNo?: string
   remark?: string
+  createdAt: string
+}
+
+export interface ReminderRecord {
+  id: string
+  paymentTermId: string
+  type: 'email' | 'wechat' | 'phone' | 'other'
+  content: string
   createdAt: string
 }
 

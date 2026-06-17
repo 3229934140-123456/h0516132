@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import { db } from '../db.js'
-import type { Contract, PaymentTerm } from '../../shared/types.js'
+import type { Contract, PaymentTerm, ReminderRecord } from '../../shared/types.js'
 
 const router = Router()
 
@@ -221,7 +221,7 @@ router.put('/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params
     const { paymentTerms, ...contractData } = req.body as Partial<Contract> & {
-      paymentTerms?: Array<Omit<PaymentTerm, 'id' | 'contractId' | 'createdAt' | 'updatedAt'>>
+      paymentTerms?: Array<(Omit<PaymentTerm, 'id' | 'contractId' | 'createdAt' | 'updatedAt'> & { id?: string })>
     }
     const existing = db.getContractById(id)
     if (!existing) {
@@ -242,16 +242,49 @@ router.put('/:id', async (req: Request, res: Response): Promise<void> => {
     }
 
     if (paymentTerms && Array.isArray(paymentTerms)) {
-      db.deletePaymentTermsByContractId(id)
-      paymentTerms.forEach((term, index) => {
-        db.createPaymentTerm({
-          ...term,
-          contractId: id,
-          termNo: term.termNo || index + 1,
-          status: term.status || 'pending',
-          paidAmount: term.paidAmount || 0,
-        })
-      })
+      const existingTerms = db.getPaymentTermsByContractId(id)
+      const existingTermMap = new Map(existingTerms.map((t) => [t.id, t]))
+      const inputTermIds = new Set(paymentTerms.map((t) => t.id).filter(Boolean) as string[])
+
+      for (const term of paymentTerms) {
+        if (term.id && existingTermMap.has(term.id)) {
+          const existingTerm = existingTermMap.get(term.id)!
+          if (existingTerm.paidAmount > 0 || existingTerm.invoiceStatus !== 'uninvoiced') {
+            db.updatePaymentTerm(term.id, {
+              description: term.description,
+              amount: term.amount,
+              dueDate: term.dueDate,
+            })
+          } else {
+            db.deletePaymentTerm(term.id)
+            db.createPaymentTerm({
+              ...term,
+              contractId: id,
+              termNo: term.termNo,
+              status: term.status || 'pending',
+              paidAmount: term.paidAmount || 0,
+            })
+          }
+        } else {
+          db.createPaymentTerm({
+            ...term,
+            contractId: id,
+            termNo: term.termNo,
+            status: term.status || 'pending',
+            paidAmount: term.paidAmount || 0,
+          })
+        }
+      }
+
+      for (const existingTerm of existingTerms) {
+        if (
+          !inputTermIds.has(existingTerm.id) &&
+          existingTerm.paidAmount <= 0 &&
+          existingTerm.invoiceStatus === 'uninvoiced'
+        ) {
+          db.deletePaymentTerm(existingTerm.id)
+        }
+      }
     }
 
     const terms = db.getPaymentTermsByContractId(id)
@@ -475,6 +508,83 @@ router.delete('/payment-terms/:termId', async (req: Request, res: Response): Pro
     res.status(500).json({
       success: false,
       error: '删除付款节点失败',
+    })
+  }
+})
+
+router.get('/payment-terms/:termId/detail', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { termId } = req.params
+    const term = db.getPaymentTermById(termId)
+    if (!term) {
+      res.status(404).json({
+        success: false,
+        error: '付款节点不存在',
+      })
+      return
+    }
+    const paymentRecords = db.getPaymentRecordsByPaymentTermId(termId)
+    const reminders = db.getRemindersByPaymentTerm(termId)
+    const invoices = term.invoiceStatus !== 'uninvoiced'
+      ? [
+          {
+            invoiceStatus: term.invoiceStatus,
+            invoiceAmount: term.invoiceAmount,
+            invoiceDate: term.invoiceDate,
+            invoiceNo: term.invoiceNo,
+          },
+        ]
+      : []
+
+    res.json({
+      success: true,
+      data: {
+        term,
+        invoices,
+        paymentRecords,
+        reminders,
+      },
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: '获取付款节点详情失败',
+    })
+  }
+})
+
+router.post('/payment-terms/:termId/reminder', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { termId } = req.params
+    const term = db.getPaymentTermById(termId)
+    if (!term) {
+      res.status(404).json({
+        success: false,
+        error: '付款节点不存在',
+      })
+      return
+    }
+    const data = req.body as Omit<ReminderRecord, 'id' | 'paymentTermId' | 'createdAt'>
+    if (!data.type || !data.content) {
+      res.status(400).json({
+        success: false,
+        error: '缺少必填字段：类型、内容',
+      })
+      return
+    }
+    const reminder = db.createReminder({
+      ...data,
+      paymentTermId: termId,
+    })
+    res.status(201).json({
+      success: true,
+      data: reminder,
+      message: '催款记录创建成功',
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: '创建催款记录失败',
     })
   }
 })

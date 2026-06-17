@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { PaymentModal } from '@/components/ui/PaymentModal';
+import { Modal, ModalBody, ModalFooter } from '@/components/ui/Modal';
 import { formatCurrency, formatDate, getProjectStatusText } from '@/utils/format';
 import { cn } from '@/lib/utils';
 import {
@@ -23,9 +24,12 @@ import {
   Clock,
   DollarSign,
   Building2,
+  Edit3,
+  Star,
 } from 'lucide-react';
 
-type FileCategory = 'requirement' | 'deliverable';
+type TypeFilter = 'all' | 'requirement' | 'deliverable' | 'other';
+type VersionFilter = 'all' | string;
 
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
@@ -39,15 +43,22 @@ export default function ProjectDetail() {
     fetchProjectFiles,
     uploadProjectFile,
     deleteProjectFile,
+    updateProjectFile,
   } = useStore();
 
   const project = projects.find((p) => p.id === id);
   const client = clients.find((c) => c.id === project?.clientId);
   const contract = contracts.find((c) => c.id === project?.contractId);
 
-  const [activeTab, setActiveTab] = useState<FileCategory>('requirement');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  const [versionFilter, setVersionFilter] = useState<VersionFilter>('all');
+  const [onlyFinal, setOnlyFinal] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [selectedTerm, setSelectedTerm] = useState<PaymentTermWithDetails | null>(null);
+  const [editingFile, setEditingFile] = useState<StoreProjectFile | null>(null);
+  const [editVersion, setEditVersion] = useState('');
+  const [editIsFinal, setEditIsFinal] = useState(false);
+  const [editRemark, setEditRemark] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -69,6 +80,20 @@ export default function ProjectDetail() {
     }
     return [];
   }, [id, storeProjectFiles]);
+
+  const availableVersions = useMemo(() => {
+    const versions = new Set(projectFiles.map((f) => f.version));
+    return Array.from(versions).sort();
+  }, [projectFiles]);
+
+  const filteredFiles = useMemo(() => {
+    return projectFiles.filter((f) => {
+      if (typeFilter !== 'all' && f.type !== typeFilter) return false;
+      if (versionFilter !== 'all' && f.version !== versionFilter) return false;
+      if (onlyFinal && !f.isFinal) return false;
+      return true;
+    });
+  }, [projectFiles, typeFilter, versionFilter, onlyFinal]);
 
   const totalPaid = useMemo(
     () => paymentTerms.reduce((sum, p) => sum + (p.paidAmount || 0), 0),
@@ -97,7 +122,7 @@ export default function ProjectDetail() {
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!id || !e.target.files || e.target.files.length === 0) return;
 
-    const type = activeTab;
+    const type = typeFilter === 'all' ? 'other' : typeFilter;
     const files = Array.from(e.target.files);
 
     for (const file of files) {
@@ -108,6 +133,9 @@ export default function ProjectDetail() {
         fileType: file.type || 'application/octet-stream',
         type,
         uploadedBy: project?.manager || '当前用户',
+        version: 'v1.0',
+        isFinal: false,
+        remark: '',
       });
     }
 
@@ -121,10 +149,43 @@ export default function ProjectDetail() {
     await deleteProjectFile(id, fileId);
   };
 
+  const handleEditFile = (file: StoreProjectFile) => {
+    setEditingFile(file);
+    setEditVersion(file.version);
+    setEditIsFinal(file.isFinal);
+    setEditRemark(file.remark);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!id || !editingFile) return;
+    const success = await updateProjectFile(id, editingFile.id, {
+      version: editVersion,
+      isFinal: editIsFinal,
+      remark: editRemark,
+    });
+    if (success) {
+      setEditingFile(null);
+    }
+  };
+
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const getTypeLabel = (type: TypeFilter | 'requirement' | 'deliverable' | 'other') => {
+    switch (type) {
+      case 'requirement': return '需求文档';
+      case 'deliverable': return '交付文件';
+      case 'other': return '其他';
+      default: return '全部';
+    }
+  };
+
+  const getUploadButtonText = () => {
+    if (typeFilter === 'all') return '上传文件';
+    return `上传${getTypeLabel(typeFilter)}`;
   };
 
   if (!project) {
@@ -134,8 +195,6 @@ export default function ProjectDetail() {
       </div>
     );
   }
-
-  const filteredFiles = projectFiles.filter((f) => f.type === activeTab);
 
   const getPaymentStatusBadge = (term: PaymentTermWithDetails) => {
     const remaining = term.amount - (term.paidAmount || 0);
@@ -165,6 +224,10 @@ export default function ProjectDetail() {
       </div>
     );
   };
+
+  const inputClass =
+    "w-full h-10 rounded-lg border border-forest-200 bg-white px-3 py-2 text-sm text-forest-900 placeholder:text-forest-400 focus:outline-none focus:ring-2 focus:ring-forest-500 focus:ring-offset-2";
+  const labelClass = "block text-sm font-medium text-forest-700 mb-1.5";
 
   return (
     <div className="p-6">
@@ -354,14 +417,14 @@ export default function ProjectDetail() {
 
       <Card className="mt-6">
         <CardHeader>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-4">
             <CardTitle className="flex items-center gap-2">
               <FolderOpen className="h-5 w-5 text-forest-600" />
               文件管理
             </CardTitle>
             <Button onClick={handleUploadClick}>
               <Upload className="h-4 w-4" />
-              上传{activeTab === 'requirement' ? '需求文档' : '交付文件'}
+              {getUploadButtonText()}
             </Button>
             <input
               ref={fileInputRef}
@@ -371,65 +434,108 @@ export default function ProjectDetail() {
               onChange={handleFileChange}
             />
           </div>
-          <div className="mt-4 flex gap-2">
-            <Button
-              variant={activeTab === 'requirement' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setActiveTab('requirement')}
+          <div className="mt-4 flex flex-wrap gap-3 items-center">
+            <div className="flex gap-2">
+              {(['all', 'requirement', 'deliverable', 'other'] as TypeFilter[]).map((t) => (
+                <Button
+                  key={t}
+                  variant={typeFilter === t ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setTypeFilter(t)}
+                >
+                  {getTypeLabel(t)}
+                  <Badge variant="secondary" className="ml-2">
+                    {t === 'all'
+                      ? projectFiles.length
+                      : projectFiles.filter((f) => f.type === t).length}
+                  </Badge>
+                </Button>
+              ))}
+            </div>
+            <div className="h-6 w-px bg-forest-200" />
+            <select
+              className={cn(inputClass, "h-9 w-auto min-w-[140px] py-1.5")}
+              value={versionFilter}
+              onChange={(e) => setVersionFilter(e.target.value)}
             >
-              需求文档
-              <Badge variant="secondary" className="ml-2">
-                {projectFiles.filter((f) => f.type === 'requirement').length}
-              </Badge>
-            </Button>
-            <Button
-              variant={activeTab === 'deliverable' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setActiveTab('deliverable')}
-            >
-              交付文件
-              <Badge variant="secondary" className="ml-2">
-                {projectFiles.filter((f) => f.type === 'deliverable').length}
-              </Badge>
-            </Button>
+              <option value="all">全部版本</option>
+              {availableVersions.map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+            <label className="flex items-center gap-2 text-sm text-forest-700 cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-forest-300 text-forest-600 focus:ring-forest-500"
+                checked={onlyFinal}
+                onChange={(e) => setOnlyFinal(e.target.checked)}
+              />
+              仅看最终版
+            </label>
           </div>
         </CardHeader>
         <CardContent>
           {filteredFiles.length === 0 ? (
             <EmptyState
-              title={`暂无${activeTab === 'requirement' ? '需求文档' : '交付文件'}`}
-              description="点击上方按钮上传文件"
+              title="暂无文件"
+              description="点击上方按钮上传文件，或调整筛选条件"
             />
           ) : (
             <div className="space-y-2">
               {filteredFiles.map((file) => (
                 <div
                   key={file.id}
-                  className="flex items-center justify-between rounded-lg border border-forest-200 p-4 hover:bg-forest-50"
+                  className="rounded-lg border border-forest-200 p-4 hover:bg-forest-50"
                 >
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-forest-100">
-                      <File className="h-5 w-5 text-forest-600" />
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-forest-100">
+                        <File className="h-5 w-5 text-forest-600" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-medium text-forest-900 truncate">{file.name}</p>
+                          <Badge variant="outline" className="shrink-0">
+                            {file.version}
+                          </Badge>
+                          {file.isFinal && (
+                            <Badge className="shrink-0 bg-amber-100 text-amber-800 border-amber-200">
+                              <Star className="h-3 w-3 mr-1 fill-current" />
+                              最终版
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="mt-1 text-xs text-forest-500">
+                          {file.fileName} · {formatFileSize(file.fileSize)} · {formatDate(file.uploadedAt, 'date')} · {file.uploadedBy}
+                        </p>
+                        {file.remark && (
+                          <p className="mt-2 text-sm text-forest-600 bg-forest-50 rounded px-2.5 py-1.5 border border-forest-100">
+                            {file.remark}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-medium text-forest-900">{file.name}</p>
-                      <p className="text-xs text-forest-500">
-                        {file.fileName} · {formatFileSize(file.fileSize)} · {formatDate(file.uploadedAt, 'date')} · {file.uploadedBy}
-                      </p>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleEditFile(file)}
+                      >
+                        <Edit3 className="h-4 w-4" />
+                        编辑
+                      </Button>
+                      <Button variant="ghost" size="sm">
+                        下载
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-red-500 hover:bg-red-50 hover:text-red-600"
+                        onClick={() => handleDeleteFile(file.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="ghost" size="sm">
-                      下载
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="text-red-500 hover:bg-red-50 hover:text-red-600"
-                      onClick={() => handleDeleteFile(file.id)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
                   </div>
                 </div>
               ))}
@@ -446,6 +552,54 @@ export default function ProjectDetail() {
         }}
         paymentTerm={selectedTerm}
       />
+
+      <Modal
+        open={!!editingFile}
+        onClose={() => setEditingFile(null)}
+        title="编辑文件信息"
+        description={editingFile?.name}
+      >
+        <ModalBody className="space-y-4">
+          <div>
+            <label className={labelClass}>版本号</label>
+            <input
+              type="text"
+              className={inputClass}
+              value={editVersion}
+              onChange={(e) => setEditVersion(e.target.value)}
+              placeholder="如 v1.0"
+            />
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm font-medium text-forest-700 cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-forest-300 text-forest-600 focus:ring-forest-500"
+                checked={editIsFinal}
+                onChange={(e) => setEditIsFinal(e.target.checked)}
+              />
+              标记为最终版
+            </label>
+          </div>
+          <div>
+            <label className={labelClass}>备注</label>
+            <textarea
+              className={cn(inputClass, "h-24 resize-none py-2")}
+              value={editRemark}
+              onChange={(e) => setEditRemark(e.target.value)}
+              placeholder="填写文件备注说明"
+            />
+          </div>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="outline" onClick={() => setEditingFile(null)}>
+            取消
+          </Button>
+          <Button variant="default" onClick={handleSaveEdit}>
+            保存
+          </Button>
+        </ModalFooter>
+      </Modal>
     </div>
   );
 }

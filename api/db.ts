@@ -5,6 +5,7 @@ import type {
   Project,
   ProjectFile,
   PaymentRecord,
+  ReminderRecord,
 } from '../shared/types.js'
 
 const generateId = (): string => {
@@ -24,6 +25,7 @@ class Database {
   private projects = new Map<string, Project>()
   private projectFiles = new Map<string, ProjectFile>()
   private paymentRecords = new Map<string, PaymentRecord>()
+  private reminderRecords = new Map<string, ReminderRecord>()
 
   constructor() {
     this.initSeedData()
@@ -315,6 +317,9 @@ class Database {
         type: 'requirement',
         uploadedBy: '陈明',
         uploadedAt: '2025-03-15T10:30:00.000Z',
+        version: 'v1.2',
+        isFinal: true,
+        remark: '客户确认的最终需求版本',
       },
       {
         id: 'f2',
@@ -326,6 +331,9 @@ class Database {
         type: 'requirement',
         uploadedBy: '陈明',
         uploadedAt: '2025-03-25T14:20:00.000Z',
+        version: 'v1.0',
+        isFinal: false,
+        remark: '初稿，待技术评审',
       },
       {
         id: 'f3',
@@ -337,6 +345,9 @@ class Database {
         type: 'deliverable',
         uploadedBy: '赵雪',
         uploadedAt: '2025-04-20T11:00:00.000Z',
+        version: 'v2.0',
+        isFinal: true,
+        remark: '客户确认通过的最终设计稿',
       },
       {
         id: 'f4',
@@ -348,6 +359,9 @@ class Database {
         type: 'requirement',
         uploadedBy: '孙磊',
         uploadedAt: '2025-05-05T16:45:00.000Z',
+        version: 'v1.0',
+        isFinal: false,
+        remark: '',
       },
     ]
 
@@ -408,12 +422,37 @@ class Database {
       },
     ]
 
+    const seedReminders: ReminderRecord[] = [
+      {
+        id: 'r1',
+        paymentTermId: 'pt5',
+        type: 'email',
+        content: '发送邮件提醒客户支付设计稿确认款 ¥170,000，已开票 INV-2025-0033',
+        createdAt: '2025-06-01T10:00:00.000Z',
+      },
+      {
+        id: 'r2',
+        paymentTermId: 'pt5',
+        type: 'phone',
+        content: '电话联系客户财务，对方表示本周内安排付款',
+        createdAt: '2025-06-10T14:30:00.000Z',
+      },
+      {
+        id: 'r3',
+        paymentTermId: 'pt3',
+        type: 'wechat',
+        content: '微信发送 OA 系统上线验收款的到期提醒，预计 8 月底到期',
+        createdAt: '2025-06-15T09:15:00.000Z',
+      },
+    ]
+
     seedClients.forEach((c) => this.clients.set(c.id, c))
     seedContracts.forEach((c) => this.contracts.set(c.id, c))
     seedPaymentTerms.forEach((p) => this.paymentTerms.set(p.id, p))
     seedProjects.forEach((p) => this.projects.set(p.id, p))
     seedProjectFiles.forEach((f) => this.projectFiles.set(f.id, f))
     seedPaymentRecords.forEach((r) => this.paymentRecords.set(r.id, r))
+    seedReminders.forEach((r) => this.reminderRecords.set(r.id, r))
   }
 
   // ============ Clients ============
@@ -543,7 +582,11 @@ class Database {
 
   deletePaymentTermsByContractId(contractId: string): void {
     const terms = this.getPaymentTermsByContractId(contractId)
-    terms.forEach((t) => this.paymentTerms.delete(t.id))
+    terms.forEach((t) => {
+      if (t.paidAmount <= 0 && t.invoiceStatus === 'uninvoiced') {
+        this.paymentTerms.delete(t.id)
+      }
+    })
   }
 
   // ============ Projects ============
@@ -599,14 +642,25 @@ class Database {
     return Array.from(this.projectFiles.values()).filter((f) => f.projectId === projectId)
   }
 
-  createProjectFile(data: Omit<ProjectFile, 'id' | 'uploadedAt'>): ProjectFile {
+  createProjectFile(data: Omit<ProjectFile, 'id' | 'uploadedAt' | 'version' | 'isFinal' | 'remark'> & { version?: string; isFinal?: boolean; remark?: string }): ProjectFile {
     const file: ProjectFile = {
       ...data,
       id: generateId(),
       uploadedAt: now(),
+      version: data.version || 'v1.0',
+      isFinal: data.isFinal ?? false,
+      remark: data.remark || '',
     }
     this.projectFiles.set(file.id, file)
     return file
+  }
+
+  updateProjectFile(id: string, data: Partial<Pick<ProjectFile, 'name' | 'version' | 'isFinal' | 'remark'>>): ProjectFile | undefined {
+    const existing = this.projectFiles.get(id)
+    if (!existing) return undefined
+    const updated: ProjectFile = { ...existing, ...data }
+    this.projectFiles.set(id, updated)
+    return updated
   }
 
   deleteProjectFile(id: string): boolean {
@@ -638,6 +692,35 @@ class Database {
 
   deletePaymentRecord(id: string): boolean {
     return this.paymentRecords.delete(id)
+  }
+
+  getPaymentRecordsByPaymentTermId(paymentTermId: string): PaymentRecord[] {
+    return Array.from(this.paymentRecords.values()).filter((r) => r.paymentTermId === paymentTermId)
+  }
+
+  // ============ Reminder Records ============
+  getReminders(): ReminderRecord[] {
+    return Array.from(this.reminderRecords.values())
+  }
+
+  getReminderById(id: string): ReminderRecord | undefined {
+    return this.reminderRecords.get(id)
+  }
+
+  getRemindersByPaymentTerm(termId: string): ReminderRecord[] {
+    return Array.from(this.reminderRecords.values())
+      .filter((r) => r.paymentTermId === termId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+  }
+
+  createReminder(data: Omit<ReminderRecord, 'id' | 'createdAt'>): ReminderRecord {
+    const reminder: ReminderRecord = {
+      ...data,
+      id: generateId(),
+      createdAt: now(),
+    }
+    this.reminderRecords.set(reminder.id, reminder)
+    return reminder
   }
 }
 

@@ -12,8 +12,16 @@ import {
   DollarSign,
   FolderKanban,
   ChevronRight,
+  ChevronDown,
   ExternalLink,
   Printer,
+  Plus,
+  Mail,
+  MessageCircle,
+  Phone,
+  MoreHorizontal,
+  Receipt,
+  Clock,
 } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import {
@@ -30,7 +38,7 @@ import {
   ModalBody,
   ModalFooter,
 } from '@/components/ui/Modal'
-import { useStore } from '@/store/useStore'
+import { useStore, type PaymentTermDetail as StorePaymentTermDetail, type ReminderRecord, type PaymentRecordWithDetails } from '@/store/useStore'
 import { formatCurrency, formatDate } from '@/utils/format'
 import { cn } from '@/lib/utils'
 
@@ -47,6 +55,8 @@ interface PaymentTermDetail {
   invoiceDate?: string
   invoiceNo?: string
 }
+
+type ExpandedTermData = StorePaymentTermDetail
 
 interface ContractDetailData {
   id: string
@@ -93,7 +103,7 @@ const statusMap: Record<string, 'active' | 'pending' | 'completed' | 'cancelled'
 export default function ContractDetail() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
-  const { projects, paymentTerms, fetchPaymentTerms, updatePaymentTermInvoice } = useStore()
+  const { projects, paymentTerms, fetchPaymentTerms, updatePaymentTermInvoice, fetchPaymentTermDetail, createReminder } = useStore()
   const [contract, setContract] = useState<ContractDetailData | null>(null)
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
@@ -104,6 +114,15 @@ export default function ContractDetail() {
     invoiceAmount: '',
     invoiceDate: '',
     invoiceNo: '',
+  })
+  const [expandedTermId, setExpandedTermId] = useState<string | null>(null)
+  const [expandedTermData, setExpandedTermData] = useState<Record<string, ExpandedTermData>>({})
+  const [loadingTermId, setLoadingTermId] = useState<string | null>(null)
+  const [reminderModalOpen, setReminderModalOpen] = useState(false)
+  const [reminderTermId, setReminderTermId] = useState<string | null>(null)
+  const [reminderForm, setReminderForm] = useState({
+    type: 'email' as 'email' | 'wechat' | 'phone' | 'other',
+    content: '',
   })
 
   useEffect(() => {
@@ -199,6 +218,77 @@ export default function ContractDetail() {
       setInvoiceModalOpen(false)
       setSelectedTerm(null)
     }
+  }
+
+  const handleToggleExpand = async (termId: string) => {
+    if (expandedTermId === termId) {
+      setExpandedTermId(null)
+      return
+    }
+    setExpandedTermId(termId)
+    if (!expandedTermData[termId]) {
+      setLoadingTermId(termId)
+      const detail = await fetchPaymentTermDetail(termId)
+      if (detail) {
+        setExpandedTermData((prev) => ({ ...prev, [termId]: detail }))
+      }
+      setLoadingTermId(null)
+    }
+  }
+
+  const handleOpenReminderModal = (termId: string) => {
+    setReminderTermId(termId)
+    setReminderForm({ type: 'email', content: '' })
+    setReminderModalOpen(true)
+  }
+
+  const handleSaveReminder = async () => {
+    if (!reminderTermId || !reminderForm.content.trim()) return
+    const success = await createReminder(reminderTermId, {
+      type: reminderForm.type,
+      content: reminderForm.content.trim(),
+    })
+    if (success) {
+      const detail = await fetchPaymentTermDetail(reminderTermId)
+      if (detail) {
+        setExpandedTermData((prev) => ({ ...prev, [reminderTermId]: detail }))
+      }
+      setReminderModalOpen(false)
+      setReminderTermId(null)
+    }
+  }
+
+  const getReminderTypeLabel = (type: string) => {
+    const map: Record<string, string> = {
+      email: '邮件',
+      wechat: '微信',
+      phone: '电话',
+      other: '其他',
+    }
+    return map[type] || type
+  }
+
+  const getReminderTypeIcon = (type: string) => {
+    switch (type) {
+      case 'email':
+        return <Mail className="h-4 w-4" />
+      case 'wechat':
+        return <MessageCircle className="h-4 w-4" />
+      case 'phone':
+        return <Phone className="h-4 w-4" />
+      default:
+        return <MoreHorizontal className="h-4 w-4" />
+    }
+  }
+
+  const getPaymentMethodLabel = (method: string) => {
+    const map: Record<string, string> = {
+      bank_transfer: '银行转账',
+      cash: '现金',
+      check: '支票',
+      other: '其他',
+    }
+    return map[method] || method
   }
 
   if (loading) {
@@ -389,62 +479,259 @@ export default function ContractDetail() {
                   {contractPaymentTerms.map((term, index) => {
                     const badge = getPaymentStatusBadge(term.status)
                     const invoiceBadge = getInvoiceStatusBadge(term.invoiceStatus || 'uninvoiced')
+                    const isExpanded = expandedTermId === term.id
+                    const termData = expandedTermData[term.id]
+                    const isLoadingTerm = loadingTermId === term.id
+                    const remainingAmount = term.amount - (term.paidAmount || 0)
+                    const progress = term.amount > 0 ? Math.round(((term.paidAmount || 0) / term.amount) * 100) : 0
+
                     return (
                       <div
                         key={term.id}
-                        className="flex items-center justify-between rounded-lg border border-forest-200 p-4"
+                        className={cn(
+                          'rounded-lg border transition-colors',
+                          isExpanded
+                            ? 'border-forest-300 bg-forest-50/30'
+                            : 'border-forest-200 hover:border-forest-300'
+                        )}
                       >
-                        <div className="flex items-center gap-4">
-                          <div
-                            className={cn(
-                              'flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold',
-                              term.status === 'paid'
-                                ? 'bg-forest-100 text-forest-700'
-                                : 'bg-forest-100 text-forest-500'
+                        <div
+                          className="flex cursor-pointer items-center justify-between p-4"
+                          onClick={() => handleToggleExpand(term.id)}
+                        >
+                          <div className="flex items-center gap-4">
+                            {isExpanded ? (
+                              <ChevronDown className="h-5 w-5 text-forest-500" />
+                            ) : (
+                              <ChevronRight className="h-5 w-5 text-forest-500" />
                             )}
-                          >
-                            {index + 1}
-                          </div>
-                          <div>
-                            <p className="font-medium text-forest-900">
-                              {term.description}
-                            </p>
-                            {term.dueDate && (
-                              <p className="text-xs text-forest-500">
-                                到期日期：{formatDate(term.dueDate, 'date')}
-                              </p>
-                            )}
-                            {term.invoiceNo && (
-                              <p className="text-xs text-forest-500">
-                                发票号：{term.invoiceNo}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="text-right">
-                            <p className="font-semibold text-forest-900">
-                              {formatCurrency(term.amount)}
-                            </p>
-                            {term.paidAmount > 0 && (
-                              <p className="text-xs text-forest-500">
-                                已付：{formatCurrency(term.paidAmount)}
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <Badge className={badge.className}>{badge.label}</Badge>
-                            <button
-                              onClick={() => handleOpenInvoiceModal(term)}
-                              className="flex items-center gap-1 text-xs text-forest-500 hover:text-forest-700"
+                            <div
+                              className={cn(
+                                'flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold',
+                                term.status === 'paid'
+                                  ? 'bg-forest-100 text-forest-700'
+                                  : 'bg-forest-100 text-forest-500'
+                              )}
                             >
-                              <Badge className={`${invoiceBadge.className} cursor-pointer`}>
-                                {invoiceBadge.label}
-                              </Badge>
+                              {index + 1}
+                            </div>
+                            <div>
+                              <p className="font-medium text-forest-900">
+                                {term.description}
+                              </p>
+                              {term.dueDate && (
+                                <p className="text-xs text-forest-500">
+                                  到期日期：{formatDate(term.dueDate, 'date')}
+                                </p>
+                              )}
+                              <div className="mt-1 flex items-center gap-2">
+                                <Badge className={badge.className}>{badge.label}</Badge>
+                                <Badge className={invoiceBadge.className}>{invoiceBadge.label}</Badge>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-4">
+                            <div className="text-right">
+                              <p className="font-semibold text-forest-900">
+                                {formatCurrency(term.amount)}
+                              </p>
+                              <p className="text-xs text-forest-500">
+                                已收 {formatCurrency(term.paidAmount || 0)} / 未收 {formatCurrency(remainingAmount)}
+                              </p>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleOpenInvoiceModal(term)
+                              }}
+                              className="flex items-center gap-1 rounded-md border border-forest-200 px-2 py-1 text-xs text-forest-600 hover:bg-forest-50"
+                            >
                               <Edit className="h-3 w-3" />
+                              开票
                             </button>
                           </div>
                         </div>
+
+                        {isExpanded && (
+                          <div className="border-t border-forest-200 p-4">
+                            {isLoadingTerm ? (
+                              <div className="py-8 text-center text-sm text-forest-500">
+                                加载中...
+                              </div>
+                            ) : termData ? (
+                              <div className="space-y-6">
+                                <div>
+                                  <h4 className="mb-3 flex items-center gap-2 text-sm font-medium text-forest-700">
+                                    <Receipt className="h-4 w-4" />
+                                    开票信息
+                                  </h4>
+                                  {termData.invoices.length > 0 ? (
+                                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                      {termData.invoices.map((inv, i) => (
+                                        <div key={i} className="rounded-lg border border-forest-200 bg-white p-3">
+                                          <p className="text-xs text-forest-500">开票状态</p>
+                                          <Badge className={getInvoiceStatusBadge(inv.invoiceStatus).className + ' mt-1'}>
+                                            {getInvoiceStatusBadge(inv.invoiceStatus).label}
+                                          </Badge>
+                                          {inv.invoiceAmount && (
+                                            <div className="mt-2">
+                                              <p className="text-xs text-forest-500">开票金额</p>
+                                              <p className="text-sm font-medium text-forest-900">
+                                                {formatCurrency(inv.invoiceAmount)}
+                                              </p>
+                                            </div>
+                                          )}
+                                          {inv.invoiceDate && (
+                                            <div className="mt-2">
+                                              <p className="text-xs text-forest-500">开票日期</p>
+                                              <p className="text-sm text-forest-700">
+                                                {formatDate(inv.invoiceDate, 'date')}
+                                              </p>
+                                            </div>
+                                          )}
+                                          {inv.invoiceNo && (
+                                            <div className="mt-2">
+                                              <p className="text-xs text-forest-500">发票号码</p>
+                                              <p className="text-sm text-forest-700">{inv.invoiceNo}</p>
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-lg bg-forest-50 py-4 text-center text-sm text-forest-500">
+                                      暂无开票记录
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div>
+                                  <h4 className="mb-3 flex items-center gap-2 text-sm font-medium text-forest-700">
+                                    <DollarSign className="h-4 w-4" />
+                                    收款流水
+                                  </h4>
+                                  {termData.paymentRecords.length > 0 ? (
+                                    <div className="overflow-x-auto rounded-lg border border-forest-200">
+                                      <table className="w-full text-sm">
+                                        <thead className="bg-forest-50">
+                                          <tr>
+                                            <th className="px-4 py-2 text-left text-xs font-medium text-forest-600">日期</th>
+                                            <th className="px-4 py-2 text-right text-xs font-medium text-forest-600">金额</th>
+                                            <th className="px-4 py-2 text-left text-xs font-medium text-forest-600">方式</th>
+                                            <th className="px-4 py-2 text-left text-xs font-medium text-forest-600">备注</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-forest-100 bg-white">
+                                          {termData.paymentRecords.map((record) => (
+                                            <tr key={record.id}>
+                                              <td className="px-4 py-2 text-forest-700">
+                                                {formatDate(record.paymentDate, 'date')}
+                                              </td>
+                                              <td className="px-4 py-2 text-right font-medium text-forest-900">
+                                                {formatCurrency(record.amount)}
+                                              </td>
+                                              <td className="px-4 py-2 text-forest-700">
+                                                {getPaymentMethodLabel(record.paymentMethod)}
+                                              </td>
+                                              <td className="px-4 py-2 text-forest-600">
+                                                {record.remark || '-'}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-lg bg-forest-50 py-4 text-center text-sm text-forest-500">
+                                      暂无收款记录
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div>
+                                  <h4 className="mb-3 flex items-center gap-2 text-sm font-medium text-forest-700">
+                                    <Clock className="h-4 w-4" />
+                                    剩余未收
+                                  </h4>
+                                  <div className="rounded-lg border border-forest-200 bg-white p-4">
+                                    <div className="mb-3 flex items-baseline justify-between">
+                                      <span className="text-3xl font-bold text-forest-900">
+                                        {formatCurrency(remainingAmount)}
+                                      </span>
+                                      <span className="text-sm text-forest-500">
+                                        进度 {progress}%
+                                      </span>
+                                    </div>
+                                    <div className="h-3 w-full overflow-hidden rounded-full bg-forest-100">
+                                      <div
+                                        className={cn(
+                                          'h-full rounded-full transition-all',
+                                          progress === 100 ? 'bg-forest-600' : 'bg-amber-500'
+                                        )}
+                                        style={{ width: `${progress}%` }}
+                                      />
+                                    </div>
+                                    <div className="mt-2 flex justify-between text-xs text-forest-500">
+                                      <span>应收：{formatCurrency(term.amount)}</span>
+                                      <span>已收：{formatCurrency(term.paidAmount || 0)}</span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div className="mb-3 flex items-center justify-between">
+                                    <h4 className="flex items-center gap-2 text-sm font-medium text-forest-700">
+                                      <MessageCircle className="h-4 w-4" />
+                                      催款记录
+                                    </h4>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        handleOpenReminderModal(term.id)
+                                      }}
+                                    >
+                                      <Plus className="h-3 w-3" />
+                                      新增催款记录
+                                    </Button>
+                                  </div>
+                                  {termData.reminders.length > 0 ? (
+                                    <div className="space-y-2">
+                                      {termData.reminders.map((reminder) => (
+                                        <div
+                                          key={reminder.id}
+                                          className="flex gap-3 rounded-lg border border-forest-200 bg-white p-3"
+                                        >
+                                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-forest-100 text-forest-600">
+                                            {getReminderTypeIcon(reminder.type)}
+                                          </div>
+                                          <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-2">
+                                              <Badge className="bg-forest-100 text-forest-700">
+                                                {getReminderTypeLabel(reminder.type)}
+                                              </Badge>
+                                              <span className="text-xs text-forest-500">
+                                                {formatDate(reminder.createdAt)}
+                                              </span>
+                                            </div>
+                                            <p className="mt-1 text-sm text-forest-700 whitespace-pre-wrap">
+                                              {reminder.content}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-lg bg-forest-50 py-4 text-center text-sm text-forest-500">
+                                      暂无催款记录
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
                       </div>
                     )
                   })}
@@ -733,6 +1020,71 @@ export default function ContractDetail() {
             取消
           </Button>
           <Button variant="default" onClick={handleSaveInvoice}>
+            保存
+          </Button>
+        </ModalFooter>
+      </Modal>
+
+      <Modal
+        open={reminderModalOpen}
+        onClose={() => {
+          setReminderModalOpen(false)
+          setReminderTermId(null)
+        }}
+        title="新增催款记录"
+      >
+        <ModalBody>
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-forest-700">
+                催款方式
+              </label>
+              <select
+                value={reminderForm.type}
+                onChange={(e) =>
+                  setReminderForm((prev) => ({
+                    ...prev,
+                    type: e.target.value as 'email' | 'wechat' | 'phone' | 'other',
+                  }))
+                }
+                className="w-full rounded-lg border border-forest-200 px-3 py-2 text-sm text-forest-900 focus:border-forest-500 focus:outline-none focus:ring-1 focus:ring-forest-500"
+              >
+                <option value="email">邮件</option>
+                <option value="wechat">微信</option>
+                <option value="phone">电话</option>
+                <option value="other">其他</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-forest-700">
+                催款内容
+              </label>
+              <textarea
+                value={reminderForm.content}
+                onChange={(e) =>
+                  setReminderForm((prev) => ({
+                    ...prev,
+                    content: e.target.value,
+                  }))
+                }
+                placeholder="请输入催款记录内容..."
+                rows={4}
+                className="w-full rounded-lg border border-forest-200 px-3 py-2 text-sm text-forest-900 focus:border-forest-500 focus:outline-none focus:ring-1 focus:ring-forest-500"
+              />
+            </div>
+          </div>
+        </ModalBody>
+        <ModalFooter>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setReminderModalOpen(false)
+              setReminderTermId(null)
+            }}
+          >
+            取消
+          </Button>
+          <Button variant="default" onClick={handleSaveReminder}>
             保存
           </Button>
         </ModalFooter>
