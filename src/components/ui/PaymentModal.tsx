@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Modal,
   ModalBody,
@@ -6,6 +6,7 @@ import {
 } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { useStore, type PaymentTermWithDetails } from "@/store/useStore";
+import { useToast } from "@/components/ui/Toast";
 import { formatCurrency } from "@/utils/format";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +29,7 @@ const paymentMethodOptions: {
 
 export function PaymentModal({ open, onClose, paymentTerm }: PaymentModalProps) {
   const createPaymentRecord = useStore((s) => s.createPaymentRecord);
+  const { showToast } = useToast();
   const [amount, setAmount] = useState<string>("");
   const [paymentMethod, setPaymentMethod] = useState<string>("bank_transfer");
   const [paymentDate, setPaymentDate] = useState<string>("");
@@ -47,21 +49,96 @@ export function PaymentModal({ open, onClose, paymentTerm }: PaymentModalProps) 
     }
   }, [open, paymentTerm]);
 
+  const remainingAmount = useMemo(() => {
+    if (!paymentTerm) return 0;
+    return paymentTerm.amount - (paymentTerm.paidAmount || 0);
+  }, [paymentTerm]);
+
+  const amountNum = useMemo(() => {
+    const num = parseFloat(amount);
+    return isNaN(num) ? 0 : num;
+  }, [amount]);
+
+  const validation = useMemo(() => {
+    if (!paymentTerm) {
+      return {
+        isValid: amountNum > 0,
+        error: "",
+        hint: "",
+        hintType: "default" as const,
+      };
+    }
+
+    if (!amount || amountNum <= 0) {
+      return {
+        isValid: false,
+        error: "",
+        hint: `剩余应收：${formatCurrency(remainingAmount)}`,
+        hintType: "default" as const,
+      };
+    }
+
+    if (amountNum > remainingAmount) {
+      return {
+        isValid: false,
+        error: "收款金额不能超过剩余应收金额",
+        hint: `剩余应收：${formatCurrency(remainingAmount)}`,
+        hintType: "error" as const,
+      };
+    }
+
+    if (Math.abs(amountNum - remainingAmount) < 0.01) {
+      return {
+        isValid: true,
+        error: "",
+        hint: "本次收款后将全额结清",
+        hintType: "success" as const,
+      };
+    }
+
+    const remainingAfter = remainingAmount - amountNum;
+    return {
+      isValid: true,
+      error: "",
+      hint: `部分收款，剩余 ${formatCurrency(remainingAfter)} 将继续保留在待收款中`,
+      hintType: "info" as const,
+    };
+  }, [amount, amountNum, remainingAmount, paymentTerm]);
+
+  const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    if (value === "") {
+      setAmount("");
+      return;
+    }
+    const regex = /^\d*\.?\d{0,2}$/;
+    if (regex.test(value)) {
+      setAmount(value);
+    }
+  };
+
   const handleSubmit = async () => {
-    if (!paymentTerm || !amount || !paymentDate || !paymentMethod) return;
+    if (!paymentTerm || !validation.isValid || !paymentDate || !paymentMethod) return;
     setSubmitting(true);
     const method = paymentMethod as "bank_transfer" | "cash" | "check" | "other";
-    const success = await createPaymentRecord({
+    const result = await createPaymentRecord({
       contractId: paymentTerm.contractId,
       paymentTermId: paymentTerm.id,
-      amount: Number(amount),
+      amount: amountNum,
       paymentDate,
       paymentMethod: method,
       remark,
     });
     setSubmitting(false);
-    if (success) {
+    if (result.success) {
+      if (result.isFullPayment) {
+        showToast("收款成功，该付款节点已全额结清", "success");
+      } else {
+        showToast(`部分收款成功，剩余 ${formatCurrency(result.remainingAfter || 0)} 待收`, "success");
+      }
       onClose();
+    } else {
+      showToast(result.error || "收款失败", "error");
     }
   };
 
@@ -97,9 +174,9 @@ export function PaymentModal({ open, onClose, paymentTerm }: PaymentModalProps) 
               </span>
             </div>
             <div className="flex items-center justify-between border-t border-forest-200 pt-2">
-              <span className="text-sm text-forest-600">本次收</span>
+              <span className="text-sm text-forest-600">剩余应收</span>
               <span className="text-lg font-semibold text-amber-600">
-                {formatCurrency(Number(amount) || 0)}
+                {formatCurrency(remainingAmount)}
               </span>
             </div>
           </div>
@@ -108,14 +185,34 @@ export function PaymentModal({ open, onClose, paymentTerm }: PaymentModalProps) 
         <div>
           <label className={labelClass}>收款金额（元）</label>
           <input
-            type="number"
-            className={cn(inputClass, "font-medium tabular-nums")}
+            type="text"
+            inputMode="decimal"
+            className={cn(
+              inputClass,
+              "font-medium tabular-nums",
+              validation.error && "border-red-500 focus:ring-red-500",
+            )}
             value={amount}
-            onChange={(e) => setAmount(e.target.value)}
+            onChange={handleAmountChange}
             placeholder="请输入收款金额"
-            min={0}
-            step={0.01}
           />
+          <div className="mt-2 min-h-[20px]">
+            {validation.error ? (
+              <p className="text-sm text-red-600">{validation.error}</p>
+            ) : validation.hint ? (
+              <p
+                className={cn(
+                  "text-sm",
+                  validation.hintType === "success" && "text-forest-600",
+                  validation.hintType === "error" && "text-red-600",
+                  validation.hintType === "info" && "text-forest-600",
+                  validation.hintType === "default" && "text-forest-500",
+                )}
+              >
+                {validation.hint}
+              </p>
+            ) : null}
+          </div>
         </div>
 
         <div>
@@ -167,7 +264,7 @@ export function PaymentModal({ open, onClose, paymentTerm }: PaymentModalProps) 
         <Button
           variant="default"
           onClick={handleSubmit}
-          disabled={submitting || !amount || !paymentDate || Number(amount) <= 0}
+          disabled={submitting || !validation.isValid || !paymentDate || amountNum <= 0}
         >
           {submitting ? "提交中..." : "确认收款"}
         </Button>

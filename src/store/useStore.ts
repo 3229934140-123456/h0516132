@@ -66,6 +66,10 @@ export interface PaymentTermWithDetails {
   status: 'pending' | 'invoiced' | 'paid' | 'overdue'
   paidAmount: number
   paidDate?: string
+  invoiceStatus: 'uninvoiced' | 'invoiced' | 'partial_invoiced'
+  invoiceAmount?: number
+  invoiceDate?: string
+  invoiceNo?: string
   createdAt: string
   updatedAt: string
   contractNo?: string
@@ -184,8 +188,15 @@ interface DataState {
   fetchContractByToken: (token: string) => Promise<ContractWithDetails | null>
   confirmContract: (token: string) => Promise<boolean>
   createContract: (data: CreateContractData) => Promise<Contract | null>
-  createPaymentRecord: (data: Omit<PaymentRecordWithDetails, 'id' | 'createdAt' | 'contractNo' | 'contractName' | 'clientName'>) => Promise<boolean>
+  updateContract: (id: string, data: Partial<CreateContractData>) => Promise<Contract | null>
+  createPaymentRecord: (data: Omit<PaymentRecordWithDetails, 'id' | 'createdAt' | 'contractNo' | 'contractName' | 'clientName'>) => Promise<{ success: boolean; isFullPayment?: boolean; remainingAfter?: number; error?: string }>
   updateClient: (id: string, data: Partial<Client>) => Promise<boolean>
+  updatePaymentTermInvoice: (termId: string, data: {
+    invoiceStatus?: 'uninvoiced' | 'invoiced' | 'partial_invoiced'
+    invoiceAmount?: number
+    invoiceDate?: string
+    invoiceNo?: string
+  }) => Promise<boolean>
 }
 
 export const useStore = create<DataState & UIState>((set, get) => ({
@@ -358,12 +369,19 @@ export const useStore = create<DataState & UIState>((set, get) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      if (!res.ok) throw new Error('创建收款记录失败')
+      const result = await res.json()
+      if (!res.ok) {
+        return { success: false, error: result.error || '创建收款记录失败' }
+      }
       await Promise.all([get().fetchPaymentRecords(), get().fetchPaymentTerms(), get().fetchStatistics()])
-      return true
+      return {
+        success: true,
+        isFullPayment: result.data?.isFullPayment,
+        remainingAfter: result.data?.remainingAfter,
+      }
     } catch (err) {
       set({ error: err instanceof Error ? err.message : '未知错误' })
-      return false
+      return { success: false, error: err instanceof Error ? err.message : '未知错误' }
     }
   },
 
@@ -411,6 +429,23 @@ export const useStore = create<DataState & UIState>((set, get) => ({
     }
   },
 
+  updateContract: async (id, data) => {
+    try {
+      const res = await fetch(`/api/contracts/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('更新合同失败')
+      const result = await res.json()
+      await Promise.all([get().fetchContracts(), get().fetchPaymentTerms()])
+      return result.success && result.data ? result.data : null
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return null
+    }
+  },
+
   updateClient: async (id, data) => {
     try {
       const res = await fetch(`/api/clients/${id}`, {
@@ -420,6 +455,22 @@ export const useStore = create<DataState & UIState>((set, get) => ({
       })
       if (!res.ok) throw new Error('更新客户失败')
       await get().fetchClients()
+      return true
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return false
+    }
+  },
+
+  updatePaymentTermInvoice: async (termId, data) => {
+    try {
+      const res = await fetch(`/api/contracts/payment-terms/${termId}/invoice`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('更新开票信息失败')
+      await get().fetchPaymentTerms()
       return true
     } catch (err) {
       set({ error: err instanceof Error ? err.message : '未知错误' })

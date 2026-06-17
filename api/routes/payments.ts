@@ -83,6 +83,31 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       })
       return
     }
+    if (data.paymentTermId) {
+      const term = db.getPaymentTermById(data.paymentTermId)
+      if (!term) {
+        res.status(400).json({
+          success: false,
+          error: '付款节点不存在',
+        })
+        return
+      }
+      const remaining = term.amount - term.paidAmount
+      if (remaining <= 0) {
+        res.status(400).json({
+          success: false,
+          error: '该付款节点已全额结清，不能再收款',
+        })
+        return
+      }
+      if (data.amount > remaining) {
+        res.status(400).json({
+          success: false,
+          error: `收款金额不能超过剩余应收金额 ¥${remaining.toFixed(2)}`,
+        })
+        return
+      }
+    }
     const record = db.createPaymentRecord(data)
     let updatedTerm = undefined
     if (data.paymentTermId) {
@@ -104,11 +129,19 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
         })
       }
     }
+    const isFullPayment = data.paymentTermId
+      ? (db.getPaymentTermById(data.paymentTermId)?.paidAmount || 0) >= (db.getPaymentTermById(data.paymentTermId)?.amount || 0)
+      : false
+    const remainingAfter = data.paymentTermId
+      ? (db.getPaymentTermById(data.paymentTermId)?.amount || 0) - (db.getPaymentTermById(data.paymentTermId)?.paidAmount || 0)
+      : 0
     res.status(201).json({
       success: true,
       data: {
         record,
         paymentTerm: updatedTerm,
+        isFullPayment,
+        remainingAfter,
       },
       message: '付款记录创建成功',
     })

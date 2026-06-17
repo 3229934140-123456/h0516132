@@ -397,6 +397,50 @@ router.put('/payment-terms/:termId', async (req: Request, res: Response): Promis
   }
 })
 
+router.put('/payment-terms/:termId/invoice', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { termId } = req.params
+    const { invoiceStatus, invoiceAmount, invoiceDate, invoiceNo } = req.body as {
+      invoiceStatus?: 'uninvoiced' | 'invoiced' | 'partial_invoiced'
+      invoiceAmount?: number
+      invoiceDate?: string
+      invoiceNo?: string
+    }
+    const existing = db.getPaymentTermById(termId)
+    if (!existing) {
+      res.status(404).json({
+        success: false,
+        error: '付款节点不存在',
+      })
+      return
+    }
+    const updateData: Partial<PaymentTerm> = {}
+    if (invoiceStatus !== undefined) updateData.invoiceStatus = invoiceStatus
+    if (invoiceAmount !== undefined) updateData.invoiceAmount = invoiceAmount
+    if (invoiceDate !== undefined) updateData.invoiceDate = invoiceDate
+    if (invoiceNo !== undefined) updateData.invoiceNo = invoiceNo
+
+    const updated = db.updatePaymentTerm(termId, updateData)
+    if (!updated) {
+      res.status(404).json({
+        success: false,
+        error: '付款节点不存在',
+      })
+      return
+    }
+    res.json({
+      success: true,
+      data: updated,
+      message: '开票信息更新成功',
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: '更新开票信息失败',
+    })
+  }
+})
+
 router.delete('/payment-terms/:termId', async (req: Request, res: Response): Promise<void> => {
   try {
     const { termId } = req.params

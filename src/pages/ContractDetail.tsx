@@ -25,6 +25,11 @@ import {
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Badge } from '@/components/ui/Badge'
+import {
+  Modal,
+  ModalBody,
+  ModalFooter,
+} from '@/components/ui/Modal'
 import { useStore } from '@/store/useStore'
 import { formatCurrency, formatDate } from '@/utils/format'
 import { cn } from '@/lib/utils'
@@ -37,6 +42,10 @@ interface PaymentTermDetail {
   dueDate: string
   paidAmount: number
   paidDate?: string
+  invoiceStatus: 'uninvoiced' | 'invoiced' | 'partial_invoiced'
+  invoiceAmount?: number
+  invoiceDate?: string
+  invoiceNo?: string
 }
 
 interface ContractDetailData {
@@ -84,10 +93,18 @@ const statusMap: Record<string, 'active' | 'pending' | 'completed' | 'cancelled'
 export default function ContractDetail() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
-  const { projects } = useStore()
+  const { projects, paymentTerms, fetchPaymentTerms, updatePaymentTermInvoice } = useStore()
   const [contract, setContract] = useState<ContractDetailData | null>(null)
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
+  const [invoiceModalOpen, setInvoiceModalOpen] = useState(false)
+  const [selectedTerm, setSelectedTerm] = useState<PaymentTermDetail | null>(null)
+  const [invoiceForm, setInvoiceForm] = useState({
+    invoiceStatus: 'uninvoiced' as 'uninvoiced' | 'invoiced' | 'partial_invoiced',
+    invoiceAmount: '',
+    invoiceDate: '',
+    invoiceNo: '',
+  })
 
   useEffect(() => {
     const fetchContract = async () => {
@@ -104,7 +121,8 @@ export default function ContractDetail() {
       }
     }
     fetchContract()
-  }, [id])
+    fetchPaymentTerms()
+  }, [id, fetchPaymentTerms])
 
   const relatedProjects = projects.filter((p) => p.contractId === id)
 
@@ -132,6 +150,55 @@ export default function ContractDetail() {
       overdue: { label: '已逾期', className: 'bg-red-100 text-red-700' },
     }
     return statusMap[status] || statusMap.pending
+  }
+
+  const getInvoiceStatusBadge = (status: string) => {
+    const statusMap: Record<string, { label: string; className: string }> = {
+      uninvoiced: { label: '未开票', className: 'bg-gray-100 text-gray-600' },
+      invoiced: { label: '已开票', className: 'bg-blue-100 text-blue-700' },
+      partial_invoiced: { label: '部分开票', className: 'bg-purple-100 text-purple-700' },
+    }
+    return statusMap[status] || statusMap.uninvoiced
+  }
+
+  const handleOpenInvoiceModal = (term: PaymentTermDetail) => {
+    setSelectedTerm(term)
+    setInvoiceForm({
+      invoiceStatus: term.invoiceStatus || 'uninvoiced',
+      invoiceAmount: term.invoiceAmount?.toString() || '',
+      invoiceDate: term.invoiceDate || '',
+      invoiceNo: term.invoiceNo || '',
+    })
+    setInvoiceModalOpen(true)
+  }
+
+  const handleSaveInvoice = async () => {
+    if (!selectedTerm) return
+
+    const data: {
+      invoiceStatus?: 'uninvoiced' | 'invoiced' | 'partial_invoiced'
+      invoiceAmount?: number
+      invoiceDate?: string
+      invoiceNo?: string
+    } = {
+      invoiceStatus: invoiceForm.invoiceStatus,
+    }
+
+    if (invoiceForm.invoiceAmount) {
+      data.invoiceAmount = parseFloat(invoiceForm.invoiceAmount)
+    }
+    if (invoiceForm.invoiceDate) {
+      data.invoiceDate = invoiceForm.invoiceDate
+    }
+    if (invoiceForm.invoiceNo) {
+      data.invoiceNo = invoiceForm.invoiceNo
+    }
+
+    const success = await updatePaymentTermInvoice(selectedTerm.id, data)
+    if (success) {
+      setInvoiceModalOpen(false)
+      setSelectedTerm(null)
+    }
   }
 
   if (loading) {
@@ -162,7 +229,9 @@ export default function ContractDetail() {
   const remainingAmount = contract.remainingAmount || contract.amount - totalPaid
   const paidPercentage = contract.amount > 0 ? Math.round((totalPaid / contract.amount) * 100) : 0
 
-  const paymentTerms = contract.paymentTerms || []
+  const contractPaymentTerms = paymentTerms
+    .filter((t) => t.contractId === id)
+    .sort((a, b) => a.termNo - b.termNo)
 
   return (
     <Layout title="合同详情">
@@ -317,8 +386,9 @@ export default function ContractDetail() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {paymentTerms.map((term, index) => {
+                  {contractPaymentTerms.map((term, index) => {
                     const badge = getPaymentStatusBadge(term.status)
+                    const invoiceBadge = getInvoiceStatusBadge(term.invoiceStatus || 'uninvoiced')
                     return (
                       <div
                         key={term.id}
@@ -344,9 +414,14 @@ export default function ContractDetail() {
                                 到期日期：{formatDate(term.dueDate, 'date')}
                               </p>
                             )}
+                            {term.invoiceNo && (
+                              <p className="text-xs text-forest-500">
+                                发票号：{term.invoiceNo}
+                              </p>
+                            )}
                           </div>
                         </div>
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3">
                           <div className="text-right">
                             <p className="font-semibold text-forest-900">
                               {formatCurrency(term.amount)}
@@ -357,7 +432,18 @@ export default function ContractDetail() {
                               </p>
                             )}
                           </div>
-                          <Badge className={badge.className}>{badge.label}</Badge>
+                          <div className="flex flex-col gap-1">
+                            <Badge className={badge.className}>{badge.label}</Badge>
+                            <button
+                              onClick={() => handleOpenInvoiceModal(term)}
+                              className="flex items-center gap-1 text-xs text-forest-500 hover:text-forest-700"
+                            >
+                              <Badge className={`${invoiceBadge.className} cursor-pointer`}>
+                                {invoiceBadge.label}
+                              </Badge>
+                              <Edit className="h-3 w-3" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     )
@@ -515,7 +601,7 @@ export default function ContractDetail() {
                       <div>
                         <p className="font-medium">第三条 付款方式</p>
                         <div className="pl-4">
-                          {paymentTerms.map((term, i) => (
+                          {contractPaymentTerms.map((term, i) => (
                             <p key={term.id}>
                               {i + 1}. {term.description}：
                               {formatCurrency(term.amount)}
@@ -553,6 +639,104 @@ export default function ContractDetail() {
           </div>
         </div>
       </div>
+
+      <Modal
+        open={invoiceModalOpen}
+        onClose={() => {
+          setInvoiceModalOpen(false)
+          setSelectedTerm(null)
+        }}
+        title="开票信息"
+        description={selectedTerm?.description}
+      >
+        <ModalBody>
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-forest-700">
+                开票状态
+              </label>
+              <select
+                value={invoiceForm.invoiceStatus}
+                onChange={(e) =>
+                  setInvoiceForm((prev) => ({
+                    ...prev,
+                    invoiceStatus: e.target.value as 'uninvoiced' | 'invoiced' | 'partial_invoiced',
+                  }))
+                }
+                className="w-full rounded-lg border border-forest-200 px-3 py-2 text-sm text-forest-900 focus:border-forest-500 focus:outline-none focus:ring-1 focus:ring-forest-500"
+              >
+                <option value="uninvoiced">未开票</option>
+                <option value="invoiced">已开票</option>
+                <option value="partial_invoiced">部分开票</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-forest-700">
+                开票金额
+              </label>
+              <input
+                type="number"
+                value={invoiceForm.invoiceAmount}
+                onChange={(e) =>
+                  setInvoiceForm((prev) => ({
+                    ...prev,
+                    invoiceAmount: e.target.value,
+                  }))
+                }
+                placeholder="请输入开票金额"
+                className="w-full rounded-lg border border-forest-200 px-3 py-2 text-sm text-forest-900 focus:border-forest-500 focus:outline-none focus:ring-1 focus:ring-forest-500"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-forest-700">
+                开票日期
+              </label>
+              <input
+                type="date"
+                value={invoiceForm.invoiceDate}
+                onChange={(e) =>
+                  setInvoiceForm((prev) => ({
+                    ...prev,
+                    invoiceDate: e.target.value,
+                  }))
+                }
+                className="w-full rounded-lg border border-forest-200 px-3 py-2 text-sm text-forest-900 focus:border-forest-500 focus:outline-none focus:ring-1 focus:ring-forest-500"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-forest-700">
+                发票号码
+              </label>
+              <input
+                type="text"
+                value={invoiceForm.invoiceNo}
+                onChange={(e) =>
+                  setInvoiceForm((prev) => ({
+                    ...prev,
+                    invoiceNo: e.target.value,
+                  }))
+                }
+                placeholder="请输入发票号码"
+                className="w-full rounded-lg border border-forest-200 px-3 py-2 text-sm text-forest-900 focus:border-forest-500 focus:outline-none focus:ring-1 focus:ring-forest-500"
+              />
+            </div>
+          </div>
+        </ModalBody>
+        <ModalFooter>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setInvoiceModalOpen(false)
+              setSelectedTerm(null)
+            }}
+          >
+            取消
+          </Button>
+          <Button variant="default" onClick={handleSaveInvoice}>
+            保存
+          </Button>
+        </ModalFooter>
+      </Modal>
     </Layout>
   )
 }

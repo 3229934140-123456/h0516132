@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 
 type TabKey = "pending" | "paid";
+type InvoiceFilterKey = "all" | "invoiced_unpaid" | "uninvoiced";
 
 const paymentMethodText: Record<string, string> = {
   bank_transfer: "银行转账",
@@ -52,6 +53,15 @@ function getDaysOverdue(dueDate: string): number {
   due.setHours(0, 0, 0, 0);
   const diff = Math.floor((today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
   return diff;
+}
+
+function getInvoiceStatusBadge(status?: string): { label: string; className: string } {
+  const statusMap: Record<string, { label: string; className: string }> = {
+    uninvoiced: { label: "未开票", className: "bg-gray-100 text-gray-600" },
+    invoiced: { label: "已开票", className: "bg-blue-100 text-blue-700" },
+    partial_invoiced: { label: "部分开票", className: "bg-purple-100 text-purple-700" },
+  };
+  return statusMap[status || "uninvoiced"] || statusMap.uninvoiced;
 }
 
 function generateReminderEmail(term: PaymentTermWithDetails, daysOverdue: number): string {
@@ -97,6 +107,7 @@ export default function PaymentTracker() {
   const loading = useStore((s) => s.loading);
 
   const [activeTab, setActiveTab] = useState<TabKey>("pending");
+  const [invoiceFilter, setInvoiceFilter] = useState<InvoiceFilterKey>("all");
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [selectedTerm, setSelectedTerm] = useState<PaymentTermWithDetails | null>(null);
   const [emailModalOpen, setEmailModalOpen] = useState(false);
@@ -111,8 +122,15 @@ export default function PaymentTracker() {
   const pendingTerms = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return paymentTerms
-      .filter((t) => t.status !== "paid")
+    let filtered = paymentTerms.filter((t) => t.status !== "paid");
+
+    if (invoiceFilter === "invoiced_unpaid") {
+      filtered = filtered.filter((t) => t.invoiceStatus === "invoiced" || t.invoiceStatus === "partial_invoiced");
+    } else if (invoiceFilter === "uninvoiced") {
+      filtered = filtered.filter((t) => !t.invoiceStatus || t.invoiceStatus === "uninvoiced");
+    }
+
+    return filtered
       .map((t) => {
         const due = new Date(t.dueDate);
         due.setHours(0, 0, 0, 0);
@@ -125,7 +143,7 @@ export default function PaymentTracker() {
         if (!a.isOverdue && b.isOverdue) return 1;
         return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
       });
-  }, [paymentTerms]);
+  }, [paymentTerms, invoiceFilter]);
 
   const paidRecords = useMemo(() => {
     return [...paymentRecords].sort(
@@ -268,9 +286,48 @@ export default function PaymentTracker() {
 
       <Card>
         <CardHeader className="pb-4">
-          <div className="flex items-center gap-2">
-            <TabButton tab="pending" label="待收款" count={pendingTerms.length} />
-            <TabButton tab="paid" label="已收款" count={paidRecords.length} />
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center gap-2">
+              <TabButton tab="pending" label="待收款" count={pendingTerms.length} />
+              <TabButton tab="paid" label="已收款" count={paidRecords.length} />
+            </div>
+            {activeTab === "pending" && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setInvoiceFilter("all")}
+                  className={cn(
+                    "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                    invoiceFilter === "all"
+                      ? "bg-forest-100 text-forest-700"
+                      : "text-forest-500 hover:bg-forest-50 hover:text-forest-700"
+                  )}
+                >
+                  全部
+                </button>
+                <button
+                  onClick={() => setInvoiceFilter("invoiced_unpaid")}
+                  className={cn(
+                    "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                    invoiceFilter === "invoiced_unpaid"
+                      ? "bg-blue-100 text-blue-700"
+                      : "text-forest-500 hover:bg-forest-50 hover:text-forest-700"
+                  )}
+                >
+                  已开票未收款
+                </button>
+                <button
+                  onClick={() => setInvoiceFilter("uninvoiced")}
+                  className={cn(
+                    "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                    invoiceFilter === "uninvoiced"
+                      ? "bg-gray-100 text-gray-700"
+                      : "text-forest-500 hover:bg-forest-50 hover:text-forest-700"
+                  )}
+                >
+                  未开票
+                </button>
+              </div>
+            )}
           </div>
         </CardHeader>
         <CardContent className="pt-0">
@@ -343,14 +400,25 @@ export default function PaymentTracker() {
                                 }
                                 category="payment"
                               />
+                              <Badge className={getInvoiceStatusBadge(term.invoiceStatus).className}>
+                                {getInvoiceStatusBadge(term.invoiceStatus).label}
+                              </Badge>
+                              {term.invoiceNo && (
+                                <span className="text-xs text-forest-400">
+                                  发票号：{term.invoiceNo}
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div className="flex flex-col items-end gap-3 md:flex-row md:items-center">
                             <div className="text-right space-y-1">
-                              <div className="text-xs text-forest-500 flex justify-end gap-3">
-                                <span>应收 {formatCurrency(term.amount)}</span>
-                                <span>已收 {formatCurrency(term.paidAmount || 0)}</span>
-                              </div>
+                              {(term.paidAmount || 0) > 0 && remaining > 0 && (
+                                <div className="text-xs text-forest-500 mb-1">
+                                  <span className="text-forest-600 font-medium">已收 {formatCurrency(term.paidAmount || 0)}</span>
+                                  <span className="text-forest-400 mx-1">/</span>
+                                  <span>应收 {formatCurrency(term.amount)}</span>
+                                </div>
+                              )}
                               <p
                                 className={cn(
                                   "text-xl font-bold tabular-nums",
@@ -363,6 +431,14 @@ export default function PaymentTracker() {
                               >
                                 剩余 {formatCurrency(remaining)}
                               </p>
+                              {(term.paidAmount || 0) > 0 && remaining > 0 && (
+                                <div className="mt-2 h-1.5 w-32 bg-forest-100 rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-amber-500 rounded-full"
+                                    style={{ width: `${((term.paidAmount || 0) / term.amount) * 100}%` }}
+                                  />
+                                </div>
+                              )}
                             </div>
                             <div className="flex gap-2">
                               <Button

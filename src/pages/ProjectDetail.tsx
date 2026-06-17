@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useStore, type PaymentTermWithDetails, type ProjectFile as StoreProjectFile } from '@/store/useStore';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { PaymentModal } from '@/components/ui/PaymentModal';
 import { formatCurrency, formatDate, getProjectStatusText } from '@/utils/format';
+import { cn } from '@/lib/utils';
 import {
   ArrowLeft,
   Calendar,
@@ -47,6 +48,7 @@ export default function ProjectDetail() {
   const [activeTab, setActiveTab] = useState<FileCategory>('requirement');
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [selectedTerm, setSelectedTerm] = useState<PaymentTermWithDetails | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (id) {
@@ -86,30 +88,32 @@ export default function ProjectDetail() {
     }
   };
 
-  const handleUpload = async () => {
-    if (!id) return;
-    const fileTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/figma', 'application/zip'];
-    const extMap: Record<string, string> = {
-      'application/pdf': '.pdf',
-      'application/msword': '.doc',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
-      'application/figma': '.fig',
-      'application/zip': '.zip',
-    };
-    const randomFileType = fileTypes[Math.floor(Math.random() * fileTypes.length)];
-    const randomExt = extMap[randomFileType] || '.bin';
-    const type = activeTab;
-    const prefix = type === 'requirement' ? '需求文档' : '交付文件';
-    const count = projectFiles.filter((f) => f.type === type).length + 1;
+  const handleUploadClick = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
 
-    await uploadProjectFile(id, {
-      name: `${prefix} ${count}`,
-      fileName: `${prefix}_${Date.now()}${randomExt}`,
-      fileSize: Math.floor(Math.random() * 9000000) + 1000000,
-      fileType: randomFileType,
-      type,
-      uploadedBy: project?.manager || '当前用户',
-    });
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!id || !e.target.files || e.target.files.length === 0) return;
+
+    const type = activeTab;
+    const files = Array.from(e.target.files);
+
+    for (const file of files) {
+      await uploadProjectFile(id, {
+        name: file.name,
+        fileName: file.name,
+        fileSize: file.size,
+        fileType: file.type || 'application/octet-stream',
+        type,
+        uploadedBy: project?.manager || '当前用户',
+      });
+    }
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const handleDeleteFile = async (fileId: string) => {
@@ -291,7 +295,7 @@ export default function ProjectDetail() {
                             {getPaymentStatusBadge(term)}
                           </div>
                           <div className="mb-3">
-                            <div className="flex items-baseline gap-3">
+                            <div className="flex items-baseline gap-3 mb-2">
                               <span className="text-lg font-bold text-forest-900">
                                 应收 {formatCurrency(term.amount)}
                               </span>
@@ -299,8 +303,24 @@ export default function ProjectDetail() {
                                 / 已收 {formatCurrency(term.paidAmount || 0)}
                               </span>
                             </div>
+                            {(term.paidAmount || 0) > 0 && (
+                              <div className="mb-2">
+                                <div className="h-2 w-full bg-forest-100 rounded-full overflow-hidden">
+                                  <div
+                                    className={cn(
+                                      "h-full rounded-full transition-all duration-300",
+                                      isPaid ? "bg-forest-600" : "bg-amber-500"
+                                    )}
+                                    style={{ width: `${((term.paidAmount || 0) / term.amount) * 100}%` }}
+                                  />
+                                </div>
+                                <p className="mt-1 text-xs text-forest-500">
+                                  收款进度: {Math.round(((term.paidAmount || 0) / term.amount) * 100)}%
+                                </p>
+                              </div>
+                            )}
                             {remaining > 0 && (
-                              <p className="mt-1 text-sm font-semibold text-red-600">
+                              <p className="text-sm font-semibold text-red-600">
                                 剩余未收 {formatCurrency(remaining)}
                               </p>
                             )}
@@ -339,10 +359,17 @@ export default function ProjectDetail() {
               <FolderOpen className="h-5 w-5 text-forest-600" />
               文件管理
             </CardTitle>
-            <Button onClick={handleUpload}>
+            <Button onClick={handleUploadClick}>
               <Upload className="h-4 w-4" />
-              上传文件
+              上传{activeTab === 'requirement' ? '需求文档' : '交付文件'}
             </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFileChange}
+            />
           </div>
           <div className="mt-4 flex gap-2">
             <Button

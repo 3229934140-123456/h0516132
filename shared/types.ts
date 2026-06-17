@@ -37,6 +37,10 @@ export interface PaymentTerm {
   status: 'pending' | 'invoiced' | 'paid' | 'overdue'
   paidAmount: number
   paidDate?: string
+  invoiceStatus: 'uninvoiced' | 'invoiced' | 'partial_invoiced'
+  invoiceAmount?: number
+  invoiceDate?: string
+  invoiceNo?: string
   createdAt: string
   updatedAt: string
 }

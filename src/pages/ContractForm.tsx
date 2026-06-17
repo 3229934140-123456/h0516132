@@ -35,7 +35,7 @@ export default function ContractForm() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
   const isEdit = !!id
-  const { clients, contracts, createContract, fetchPaymentTerms } = useStore()
+  const { clients, contracts, createContract, updateContract, fetchPaymentTerms } = useStore()
 
   const [clientId, setClientId] = useState('')
   const [title, setTitle] = useState('')
@@ -211,25 +211,19 @@ export default function ContractForm() {
     }
 
     try {
-      if (isEdit) {
-        const url = `/api/contracts/${id}`
-        const res = await fetch(url, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(contractData),
-        })
-        if (!res.ok) {
-          const data = await res.json()
-          throw new Error(data.error || '保存失败')
+      if (isEdit && id) {
+        const result = await updateContract(id, contractData)
+        if (!result) {
+          throw new Error('保存失败')
         }
+        navigate(`/contracts/${id}`)
       } else {
         const result = await createContract(contractData)
         if (!result) {
           throw new Error('创建合同失败')
         }
+        navigate('/contracts')
       }
-      await fetchPaymentTerms()
-      navigate('/contracts')
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存失败')
     }
