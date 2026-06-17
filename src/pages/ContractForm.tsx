@@ -91,8 +91,8 @@ export default function ContractForm() {
               setServiceContent(data.description || '')
               if (data.paymentTerms && data.paymentTerms.length > 0) {
                 setPaymentTerms(
-                  data.paymentTerms.map((t: PaymentTermForm) => ({
-                    id: crypto.randomUUID(),
+                  data.paymentTerms.map((t: PaymentTermForm & { id?: string }) => ({
+                    id: t.id || crypto.randomUUID(),
                     description: t.description,
                     percentage:
                       data.amount > 0
@@ -189,6 +189,7 @@ export default function ContractForm() {
     }
 
     const paymentTermsData = paymentTerms.map((term, index) => ({
+      id: term.id,
       termNo: index + 1,
       description: term.description,
       amount: term.amount,

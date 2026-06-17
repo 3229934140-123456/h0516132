@@ -176,6 +176,7 @@ interface CreateContractData {
   status?: 'draft' | 'active' | 'completed' | 'terminated'
   description: string
   paymentTerms?: Array<{
+    id?: string
     termNo?: number
     description: string
     amount: number

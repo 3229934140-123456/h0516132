@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   Card,
   CardContent,
@@ -38,17 +38,24 @@ import {
   Building2,
   AlertTriangle,
   ChevronRight,
+  ChevronDown,
   FileDown,
   FileText,
   Receipt,
   ClipboardList,
   Users,
   FileSpreadsheet,
+  Info,
+  Edit3,
+  Save,
+  Loader2,
 } from "lucide-react";
 
 type TabKey = "pending" | "paid" | "reconciliation";
 type InvoiceFilterKey = "all" | "invoiced_unpaid" | "uninvoiced";
 type ReconciliationSubTab = "client" | "contract" | "term";
+type ReconciliationStatusFilter = "all" | "verified" | "pending" | "discrepancy";
+type ReconciliationStatus = "verified" | "pending" | "discrepancy";
 
 interface ReconciliationSummary {
   totalInvoiced: number;
@@ -56,6 +63,55 @@ interface ReconciliationSummary {
   invoicedUnpaid: number;
   uninvoicedPaid: number;
   partialReceived: number;
+}
+
+interface ReconciliationPaymentRecord {
+  recordId: string;
+  amount: number;
+  paymentDate: string;
+  paymentMethod: string;
+  referenceNo?: string;
+  remark?: string;
+}
+
+interface ReconciliationByTerm {
+  termId: string;
+  termNo: number;
+  description: string;
+  contractId?: string;
+  contractNo?: string;
+  clientId?: string;
+  clientName?: string;
+  invoiceStatus: string;
+  invoiceAmount: number;
+  invoiceDate?: string;
+  invoiceNo?: string;
+  termAmount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  status: string;
+  invoicedUnpaid: number;
+  uninvoicedPaid: number;
+  partialReceived: number;
+  reconciliationStatus?: ReconciliationStatus;
+  remark?: string;
+  paymentRecords: ReconciliationPaymentRecord[];
+}
+
+interface ReconciliationByContract {
+  contractId: string;
+  contractNo: string;
+  contractName: string;
+  clientId: string;
+  clientName: string;
+  invoicedAmount: number;
+  receivedAmount: number;
+  invoicedUnpaid: number;
+  uninvoicedPaid: number;
+  partialReceived: number;
+  reconciliationStatus?: ReconciliationStatus;
+  remark?: string;
+  terms: ReconciliationByTerm[];
 }
 
 interface ReconciliationByClient {
@@ -66,34 +122,9 @@ interface ReconciliationByClient {
   invoicedUnpaid: number;
   uninvoicedPaid: number;
   partialReceived: number;
-}
-
-interface ReconciliationByContract {
-  contractId: string;
-  contractNo: string;
-  contractName: string;
-  clientName: string;
-  invoicedAmount: number;
-  receivedAmount: number;
-  invoicedUnpaid: number;
-  uninvoicedPaid: number;
-  partialReceived: number;
-}
-
-interface ReconciliationByTerm {
-  termId: string;
-  termNo: number;
-  description: string;
-  contractNo: string;
-  clientName: string;
-  invoiceStatus: string;
-  invoiceAmount: number;
-  invoiceDate?: string;
-  invoiceNo?: string;
-  termAmount: number;
-  paidAmount: number;
-  remainingAmount: number;
-  status: string;
+  reconciliationStatus?: ReconciliationStatus;
+  remark?: string;
+  contracts: ReconciliationByContract[];
 }
 
 interface ReconciliationData {
@@ -116,6 +147,22 @@ const invoiceStatusText: Record<string, string> = {
   invoiced: "已开票",
   partial_invoiced: "部分开票",
 };
+
+const reconciliationStatusText: Record<ReconciliationStatus, string> = {
+  verified: "已核对",
+  pending: "待跟进",
+  discrepancy: "有差异",
+};
+
+function getReconciliationStatusBadge(status?: ReconciliationStatus): { label: string; className: string } {
+  const statusMap: Record<ReconciliationStatus, { label: string; className: string }> = {
+    verified: { label: "已核对", className: "bg-green-100 text-green-700" },
+    pending: { label: "待跟进", className: "bg-amber-100 text-amber-700" },
+    discrepancy: { label: "有差异", className: "bg-red-100 text-red-700" },
+  };
+  if (!status) return { label: "未设置", className: "bg-gray-100 text-gray-500" };
+  return statusMap[status];
+}
 
 function getDaysOverdue(dueDate: string): number {
   const due = new Date(dueDate);
@@ -182,6 +229,16 @@ function getMonthOptions(): { value: string; label: string }[] {
   return options;
 }
 
+type EntityType = "client" | "contract" | "term";
+
+interface SavePayload {
+  month: string;
+  entityType: EntityType;
+  entityId: string;
+  status: ReconciliationStatus;
+  remark: string;
+}
+
 export default function PaymentTracker() {
   const paymentTerms = useStore((s) => s.paymentTerms);
   const paymentRecords = useStore((s) => s.paymentRecords);
@@ -201,6 +258,27 @@ export default function PaymentTracker() {
   const [reconciliationLoading, setReconciliationLoading] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState("");
   const [reconciliationSubTab, setReconciliationSubTab] = useState<ReconciliationSubTab>("client");
+  const [reconciliationStatusFilter, setReconciliationStatusFilter] = useState<ReconciliationStatusFilter>("all");
+
+  const [expandedClients, setExpandedClients] = useState<Set<string>>(new Set());
+  const [expandedContracts, setExpandedContracts] = useState<Set<string>>(new Set());
+  const [expandedTerms, setExpandedTerms] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (set: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => {
+    set((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const savingKeysRef = useRef<Set<string>>(new Set());
+  const [savingKeys, setSavingKeys] = useState<Set<string>>(new Set());
 
   const fetchReconciliation = async (month?: string) => {
     setReconciliationLoading(true);
@@ -219,6 +297,56 @@ export default function PaymentTracker() {
       setReconciliationLoading(false);
     }
   };
+
+  const doSave = useCallback(async (payload: SavePayload) => {
+    const key = `${payload.month}-${payload.entityType}-${payload.entityId}`;
+    try {
+      savingKeysRef.current.add(key);
+      setSavingKeys(new Set(savingKeysRef.current));
+      await fetch("/api/statistics/reconciliation-records", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } finally {
+      savingKeysRef.current.delete(key);
+      setSavingKeys(new Set(savingKeysRef.current));
+    }
+  }, []);
+
+  const scheduleSave = useCallback(
+    (payload: SavePayload) => {
+      const key = `${payload.month}-${payload.entityType}-${payload.entityId}`;
+      const existing = saveTimersRef.current.get(key);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(() => {
+        doSave(payload);
+        saveTimersRef.current.delete(key);
+      }, 500);
+      saveTimersRef.current.set(key, timer);
+    },
+    [doSave]
+  );
+
+  const immediateSave = useCallback(
+    (payload: SavePayload) => {
+      const key = `${payload.month}-${payload.entityType}-${payload.entityId}`;
+      const existing = saveTimersRef.current.get(key);
+      if (existing) {
+        clearTimeout(existing);
+        saveTimersRef.current.delete(key);
+      }
+      doSave(payload);
+    },
+    [doSave]
+  );
+
+  useEffect(() => {
+    return () => {
+      saveTimersRef.current.forEach((t) => clearTimeout(t));
+      saveTimersRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     fetchPaymentTerms();
@@ -314,6 +442,113 @@ export default function PaymentTracker() {
     }
   };
 
+  const handleStatusChange = (
+    entityType: EntityType,
+    entityId: string,
+    newStatus: ReconciliationStatus,
+    currentRemark: string = "",
+  ) => {
+    if (!selectedMonth) return;
+    updateLocal(entityType, entityId, { reconciliationStatus: newStatus });
+    scheduleSave({
+      month: selectedMonth,
+      entityType,
+      entityId,
+      status: newStatus,
+      remark: currentRemark,
+    });
+  };
+
+  const handleRemarkChange = (
+    entityType: EntityType,
+    entityId: string,
+    newRemark: string,
+    currentStatus?: ReconciliationStatus,
+  ) => {
+    if (!selectedMonth) return;
+    updateLocal(entityType, entityId, { remark: newRemark });
+    const defaultStatus: ReconciliationStatus = currentStatus || "pending";
+    scheduleSave({
+      month: selectedMonth,
+      entityType,
+      entityId,
+      status: defaultStatus,
+      remark: newRemark,
+    });
+  };
+
+  const handleRemarkBlur = (
+    entityType: EntityType,
+    entityId: string,
+    finalRemark: string,
+    currentStatus?: ReconciliationStatus,
+  ) => {
+    if (!selectedMonth) return;
+    const defaultStatus: ReconciliationStatus = currentStatus || "pending";
+    immediateSave({
+      month: selectedMonth,
+      entityType,
+      entityId,
+      status: defaultStatus,
+      remark: finalRemark,
+    });
+  };
+
+  const updateLocal = (
+    entityType: EntityType,
+    entityId: string,
+    patch: Partial<{ reconciliationStatus: ReconciliationStatus; remark: string }>,
+  ) => {
+    setReconciliationData((prev) => {
+      if (!prev) return prev;
+      if (entityType === "client") {
+        return {
+          ...prev,
+          byClient: prev.byClient.map((r) =>
+            r.clientId === entityId ? { ...r, ...patch } : r
+          ),
+        };
+      } else if (entityType === "contract") {
+        return {
+          ...prev,
+          byContract: prev.byContract.map((r) =>
+            r.contractId === entityId ? { ...r, ...patch } : r
+          ),
+        };
+      } else {
+        return {
+          ...prev,
+          byTerm: prev.byTerm.map((r) =>
+            r.termId === entityId ? { ...r, ...patch } : r
+          ),
+        };
+      }
+    });
+  };
+
+  const isSaving = (entityType: EntityType, entityId: string): boolean => {
+    const key = `${selectedMonth}-${entityType}-${entityId}`;
+    return savingKeys.has(key);
+  };
+
+  const filteredByClient = useMemo(() => {
+    if (!reconciliationData) return [];
+    if (reconciliationStatusFilter === "all") return reconciliationData.byClient;
+    return reconciliationData.byClient.filter((r) => r.reconciliationStatus === reconciliationStatusFilter);
+  }, [reconciliationData, reconciliationStatusFilter]);
+
+  const filteredByContract = useMemo(() => {
+    if (!reconciliationData) return [];
+    if (reconciliationStatusFilter === "all") return reconciliationData.byContract;
+    return reconciliationData.byContract.filter((r) => r.reconciliationStatus === reconciliationStatusFilter);
+  }, [reconciliationData, reconciliationStatusFilter]);
+
+  const filteredByTerm = useMemo(() => {
+    if (!reconciliationData) return [];
+    if (reconciliationStatusFilter === "all") return reconciliationData.byTerm;
+    return reconciliationData.byTerm.filter((r) => r.reconciliationStatus === reconciliationStatusFilter);
+  }, [reconciliationData, reconciliationStatusFilter]);
+
   const handleExportCSV = () => {
     if (!reconciliationData) return;
 
@@ -321,17 +556,25 @@ export default function PaymentTracker() {
     const filename = `对账报表-${monthSuffix}.csv`;
 
     if (reconciliationSubTab === "client") {
-      const headers: CSVHeader<ReconciliationByClient>[] = [
+      const headers: CSVHeader<ReconciliationByClient & { reconciliationStatusText?: string }>[] = [
         { key: "clientName", label: "客户名称" },
         { key: "invoicedAmount", label: "已开票" },
         { key: "receivedAmount", label: "已收款" },
         { key: "invoicedUnpaid", label: "已开票未收" },
         { key: "uninvoicedPaid", label: "未开票已收" },
         { key: "partialReceived", label: "部分收款" },
+        { key: "reconciliationStatusText", label: "对账状态" },
+        { key: "remark", label: "备注" },
       ];
-      exportToCSV(reconciliationData.byClient, headers, filename);
+      const data = filteredByClient.map((r) => ({
+        ...r,
+        reconciliationStatusText: r.reconciliationStatus
+          ? reconciliationStatusText[r.reconciliationStatus]
+          : "未设置",
+      }));
+      exportToCSV(data, headers, filename);
     } else if (reconciliationSubTab === "contract") {
-      const headers: CSVHeader<ReconciliationByContract>[] = [
+      const headers: CSVHeader<ReconciliationByContract & { reconciliationStatusText?: string }>[] = [
         { key: "contractNo", label: "合同编号" },
         { key: "contractName", label: "合同名称" },
         { key: "clientName", label: "客户" },
@@ -340,22 +583,35 @@ export default function PaymentTracker() {
         { key: "invoicedUnpaid", label: "已开票未收" },
         { key: "uninvoicedPaid", label: "未开票已收" },
         { key: "partialReceived", label: "部分收款" },
+        { key: "reconciliationStatusText", label: "对账状态" },
+        { key: "remark", label: "备注" },
       ];
-      exportToCSV(reconciliationData.byContract, headers, filename);
+      const data = filteredByContract.map((r) => ({
+        ...r,
+        reconciliationStatusText: r.reconciliationStatus
+          ? reconciliationStatusText[r.reconciliationStatus]
+          : "未设置",
+      }));
+      exportToCSV(data, headers, filename);
     } else {
-      const headers: CSVHeader<ReconciliationByTerm>[] = [
+      const headers: CSVHeader<(ReconciliationByTerm & { invoiceStatusText?: string; reconciliationStatusText?: string })>[] = [
         { key: "description", label: "节点描述" },
         { key: "contractNo", label: "合同" },
         { key: "clientName", label: "客户" },
-        { key: "invoiceStatus", label: "开票状态" },
+        { key: "invoiceStatusText", label: "开票状态" },
         { key: "invoiceAmount", label: "开票金额" },
         { key: "termAmount", label: "应收金额" },
         { key: "paidAmount", label: "已收金额" },
         { key: "remainingAmount", label: "剩余未收" },
+        { key: "reconciliationStatusText", label: "对账状态" },
+        { key: "remark", label: "备注" },
       ];
-      const data = reconciliationData.byTerm.map((t) => ({
+      const data = filteredByTerm.map((t) => ({
         ...t,
-        invoiceStatus: invoiceStatusText[t.invoiceStatus] || t.invoiceStatus,
+        invoiceStatusText: invoiceStatusText[t.invoiceStatus] || t.invoiceStatus,
+        reconciliationStatusText: t.reconciliationStatus
+          ? reconciliationStatusText[t.reconciliationStatus]
+          : "未设置",
       }));
       exportToCSV(data, headers, filename);
     }
@@ -425,6 +681,60 @@ export default function PaymentTracker() {
         </div>
       </CardContent>
     </Card>
+  );
+
+  const StatusSelect = ({
+    value,
+    onChange,
+    disabled,
+  }: {
+    value?: ReconciliationStatus;
+    onChange: (s: ReconciliationStatus) => void;
+    disabled?: boolean;
+  }) => (
+    <select
+      value={value || ""}
+      disabled={disabled}
+      onChange={(e) => {
+        if (e.target.value) onChange(e.target.value as ReconciliationStatus);
+      }}
+      className={cn(
+        "rounded-md border px-2 py-1 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-forest-100",
+        value === "verified" && "border-green-300 bg-green-50 text-green-700",
+        value === "pending" && "border-amber-300 bg-amber-50 text-amber-700",
+        value === "discrepancy" && "border-red-300 bg-red-50 text-red-700",
+        !value && "border-gray-200 bg-white text-gray-500",
+      )}
+    >
+      <option value="">未设置</option>
+      <option value="verified">已核对</option>
+      <option value="pending">待跟进</option>
+      <option value="discrepancy">有差异</option>
+    </select>
+  );
+
+  const RemarkInput = ({
+    value,
+    onChange,
+    onBlur,
+    disabled,
+  }: {
+    value?: string;
+    onChange: (v: string) => void;
+    onBlur: () => void;
+    disabled?: boolean;
+  }) => (
+    <div className="relative">
+      <input
+        type="text"
+        value={value || ""}
+        disabled={disabled}
+        placeholder={disabled ? "请先选择月份" : "添加备注..."}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        className="w-full rounded-md border border-forest-200 bg-white px-2 py-1 text-xs text-forest-700 placeholder:text-forest-300 focus:border-forest-400 focus:outline-none focus:ring-2 focus:ring-forest-100 disabled:bg-gray-50 disabled:text-gray-400"
+      />
+    </div>
   );
 
   return (
@@ -534,30 +844,65 @@ export default function PaymentTracker() {
             )}
 
             {activeTab === "reconciliation" && (
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="text-sm font-medium text-forest-700">月份：</label>
-                  <select
-                    value={selectedMonth}
-                    onChange={(e) => setSelectedMonth(e.target.value)}
-                    className="rounded-lg border border-forest-200 bg-white px-3 py-1.5 text-sm text-forest-700 focus:border-forest-400 focus:outline-none focus:ring-2 focus:ring-forest-100"
+              <div className="space-y-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="text-sm font-medium text-forest-700">月份：</label>
+                    <select
+                      value={selectedMonth}
+                      onChange={(e) => setSelectedMonth(e.target.value)}
+                      className="rounded-lg border border-forest-200 bg-white px-3 py-1.5 text-sm text-forest-700 focus:border-forest-400 focus:outline-none focus:ring-2 focus:ring-forest-100"
+                    >
+                      {monthOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    onClick={handleExportCSV}
+                    disabled={!reconciliationData}
                   >
-                    {monthOptions.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                    <FileDown className="h-4 w-4" />
+                    导出 CSV
+                  </Button>
                 </div>
-                <Button
-                  size="sm"
-                  variant="default"
-                  onClick={handleExportCSV}
-                  disabled={!reconciliationData}
-                >
-                  <FileDown className="h-4 w-4" />
-                  导出 CSV
-                </Button>
+
+                <div className="flex flex-wrap items-center gap-3 rounded-lg bg-blue-50/60 border border-blue-100 p-3">
+                  <Info className="h-4 w-4 text-blue-500 flex-shrink-0" />
+                  <span className="text-xs text-blue-700">
+                    统计口径：按开票/收款发生月归属（跨月数据按实际发生时间计算）
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-sm font-medium text-forest-700">对账状态：</label>
+                  {(["all", "verified", "pending", "discrepancy"] as ReconciliationStatusFilter[]).map((sf) => (
+                    <button
+                      key={sf}
+                      onClick={() => setReconciliationStatusFilter(sf)}
+                      className={cn(
+                        "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                        reconciliationStatusFilter === sf
+                          ? sf === "verified"
+                            ? "bg-green-100 text-green-700"
+                            : sf === "pending"
+                            ? "bg-amber-100 text-amber-700"
+                            : sf === "discrepancy"
+                            ? "bg-red-100 text-red-700"
+                            : "bg-forest-100 text-forest-700"
+                          : "text-forest-500 hover:bg-forest-50 hover:text-forest-700"
+                      )}
+                    >
+                      {sf === "all"
+                        ? "全部"
+                        : reconciliationStatusText[sf as ReconciliationStatus]}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -628,9 +973,7 @@ export default function PaymentTracker() {
                               到期：{formatDate(term.dueDate, "date")}
                             </span>
                             <StatusBadge
-                              status={
-                                term.isOverdue ? "overdue" : "pending"
-                              }
+                              status={term.isOverdue ? 'overdue' : 'pending'}
                               category="payment"
                             />
                             <Badge className={getInvoiceStatusBadge(term.invoiceStatus).className}>
@@ -837,13 +1180,14 @@ export default function PaymentTracker() {
 
                   {reconciliationSubTab === "client" && (
                     <div className="overflow-hidden rounded-xl border border-forest-200">
-                      {reconciliationData.byClient.length === 0 ? (
+                      {filteredByClient.length === 0 ? (
                         <EmptyState title="暂无客户对账数据" />
                       ) : (
                         <div className="overflow-x-auto">
                           <table className="w-full">
                             <thead>
                               <tr className="border-b border-forest-200 bg-forest-50">
+                                <th className="w-10 px-2 py-3"></th>
                                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-forest-600">
                                   客户名称
                                 </th>
@@ -862,34 +1206,272 @@ export default function PaymentTracker() {
                                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-forest-600">
                                   部分收款
                                 </th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-forest-600">
+                                  对账状态
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-forest-600 w-56">
+                                  备注
+                                </th>
                               </tr>
                             </thead>
-                            <tbody className="divide-y divide-forest-100 bg-white">
-                              {reconciliationData.byClient.map((row) => (
-                                <tr key={row.clientId} className="transition-colors hover:bg-forest-50/50">
-                                  <td className="px-4 py-3">
-                                    <div className="flex items-center gap-2 text-sm font-medium text-forest-900">
-                                      <Users className="h-4 w-4 text-forest-400" />
-                                      {row.clientName}
-                                    </div>
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-forest-700">
-                                    {formatCurrency(row.invoicedAmount)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm font-semibold tabular-nums text-forest-700">
-                                    {formatCurrency(row.receivedAmount)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-amber-600">
-                                    {formatCurrency(row.invoicedUnpaid)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-purple-600">
-                                    {formatCurrency(row.uninvoicedPaid)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-teal-600">
-                                    {formatCurrency(row.partialReceived)}
-                                  </td>
-                                </tr>
-                              ))}
+                            <tbody className="bg-white">
+                              {filteredByClient.map((client) => {
+                                const clientExpanded = expandedClients.has(client.clientId);
+                                const saving = isSaving("client", client.clientId);
+                                const hasContracts = client.contracts && client.contracts.length > 0;
+                                return (
+                                  <React.Fragment key={client.clientId}>
+                                    <tr
+                                      className={cn(
+                                        "cursor-pointer transition-colors border-b border-forest-100 hover:bg-forest-50/50",
+                                        clientExpanded && "bg-amber-50/30"
+                                      )}
+                                      onClick={(e) => {
+                                        if ((e.target as HTMLElement).tagName === 'SELECT' || (e.target as HTMLElement).tagName === 'INPUT') return;
+                                        if (hasContracts) toggleExpand(setExpandedClients, client.clientId);
+                                      }}
+                                    >
+                                      <td className="px-2 py-3">
+                                        <div className={cn(
+                                          "flex h-6 w-6 items-center justify-center rounded transition-transform duration-200",
+                                          !hasContracts && "invisible"
+                                        )} style={{ transform: clientExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                                          <ChevronRight className="h-4 w-4 text-forest-500" />
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <div className="flex items-center gap-2 text-sm font-medium text-forest-900">
+                                          <Users className="h-4 w-4 text-forest-400" />
+                                          {client.clientName}
+                                          {saving && <Loader2 className="h-3 w-3 animate-spin text-forest-400" />}
+                                          {hasContracts && <Badge variant="outline" className="ml-1">{client.contracts.length}份合同</Badge>}
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-forest-700">
+                                        {formatCurrency(client.invoicedAmount)}
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm font-semibold tabular-nums text-forest-700">
+                                        {formatCurrency(client.receivedAmount)}
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-amber-600">
+                                        {formatCurrency(client.invoicedUnpaid)}
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-purple-600">
+                                        {formatCurrency(client.uninvoicedPaid)}
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-teal-600">
+                                        {formatCurrency(client.partialReceived)}
+                                      </td>
+                                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                                        <StatusSelect
+                                          value={client.reconciliationStatus}
+                                          disabled={!selectedMonth}
+                                          onChange={(s) =>
+                                            handleStatusChange("client", client.clientId, s, client.remark)
+                                          }
+                                        />
+                                      </td>
+                                      <td className="px-4 py-3 w-56" onClick={(e) => e.stopPropagation()}>
+                                        <RemarkInput
+                                          value={client.remark}
+                                          disabled={!selectedMonth}
+                                          onChange={(v) =>
+                                            handleRemarkChange("client", client.clientId, v, client.reconciliationStatus)
+                                          }
+                                          onBlur={() =>
+                                            handleRemarkBlur("client", client.clientId, client.remark || "", client.reconciliationStatus)
+                                          }
+                                        />
+                                      </td>
+                                    </tr>
+                                    {clientExpanded && hasContracts && (
+                                      <tr className="bg-forest-50/40">
+                                        <td colSpan={9} className="p-0">
+                                          <div className="border-l-4 border-amber-400 pl-2 pr-2 py-3">
+                                            <div className="overflow-hidden rounded-lg border border-forest-200 bg-white ml-4">
+                                              <div className="bg-forest-100/60 px-4 py-2 border-b border-forest-200">
+                                                <span className="text-xs font-semibold text-forest-700 uppercase tracking-wider">
+                                                  合同列表（{client.contracts.length}）
+                                                </span>
+                                              </div>
+                                              <table className="w-full">
+                                                <thead>
+                                                  <tr className="border-b border-forest-100 bg-forest-50/70">
+                                                    <th className="w-8 px-2 py-2"></th>
+                                                    <th className="px-3 py-2 text-left text-xs font-semibold text-forest-600">合同</th>
+                                                    <th className="px-3 py-2 text-right text-xs font-semibold text-forest-600">已开票</th>
+                                                    <th className="px-3 py-2 text-right text-xs font-semibold text-forest-600">已收款</th>
+                                                    <th className="px-3 py-2 text-right text-xs font-semibold text-forest-600">已开票未收</th>
+                                                    <th className="px-3 py-2 text-right text-xs font-semibold text-forest-600">未开票已收</th>
+                                                    <th className="px-3 py-2 text-right text-xs font-semibold text-forest-600">部分收款</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {client.contracts.map((contract) => {
+                                                    const contractExpanded = expandedContracts.has(contract.contractId);
+                                                    const hasTerms = contract.terms && contract.terms.length > 0;
+                                                    return (
+                                                      <React.Fragment key={contract.contractId}>
+                                                        <tr
+                                                          className={cn(
+                                                            "cursor-pointer transition-colors border-b border-forest-100 hover:bg-forest-50/50",
+                                                            contractExpanded && "bg-amber-50/30"
+                                                          )}
+                                                          onClick={() => hasTerms && toggleExpand(setExpandedContracts, contract.contractId)}
+                                                        >
+                                                          <td className="px-2 py-2">
+                                                            <div className={cn(
+                                                              "flex h-5 w-5 items-center justify-center rounded transition-transform duration-200",
+                                                              !hasTerms && "invisible"
+                                                            )} style={{ transform: contractExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                                                              <ChevronRight className="h-3.5 w-3.5 text-forest-500" />
+                                                            </div>
+                                                          </td>
+                                                          <td className="px-3 py-2">
+                                                            <div className="flex flex-col">
+                                                              <span className="text-xs font-medium text-forest-900">{contract.contractName}</span>
+                                                              <span className="text-[11px] text-forest-500">{contract.contractNo}</span>
+                                                            </div>
+                                                          </td>
+                                                          <td className="px-3 py-2 text-right text-xs tabular-nums text-forest-700">{formatCurrency(contract.invoicedAmount)}</td>
+                                                          <td className="px-3 py-2 text-right text-xs font-semibold tabular-nums text-forest-700">{formatCurrency(contract.receivedAmount)}</td>
+                                                          <td className="px-3 py-2 text-right text-xs tabular-nums text-amber-600">{formatCurrency(contract.invoicedUnpaid)}</td>
+                                                          <td className="px-3 py-2 text-right text-xs tabular-nums text-purple-600">{formatCurrency(contract.uninvoicedPaid)}</td>
+                                                          <td className="px-3 py-2 text-right text-xs tabular-nums text-teal-600">{formatCurrency(contract.partialReceived)}</td>
+                                                        </tr>
+                                                        {contractExpanded && hasTerms && (
+                                                          <tr>
+                                                            <td colSpan={7} className="p-0 bg-forest-50/40">
+                                                              <div className="border-l-4 border-forest-400 pl-2 pr-2 py-2 ml-1">
+                                                                <div className="overflow-hidden rounded border border-forest-200 bg-white ml-3">
+                                                                  <div className="bg-forest-100/40 px-3 py-1.5 border-b border-forest-200">
+                                                                    <span className="text-[11px] font-semibold text-forest-700 uppercase tracking-wider">
+                                                                      付款节点（{contract.terms.length}）
+                                                                    </span>
+                                                                  </div>
+                                                                  <table className="w-full">
+                                                                    <thead>
+                                                                      <tr className="border-b border-forest-100 bg-forest-50/50">
+                                                                        <th className="w-7 px-1.5 py-1.5"></th>
+                                                                        <th className="px-2.5 py-1.5 text-left text-[11px] font-semibold text-forest-600">节点</th>
+                                                                        <th className="px-2.5 py-1.5 text-left text-[11px] font-semibold text-forest-600">开票状态</th>
+                                                                        <th className="px-2.5 py-1.5 text-right text-[11px] font-semibold text-forest-600">开票</th>
+                                                                        <th className="px-2.5 py-1.5 text-right text-[11px] font-semibold text-forest-600">应收</th>
+                                                                        <th className="px-2.5 py-1.5 text-right text-[11px] font-semibold text-forest-600">已收</th>
+                                                                        <th className="px-2.5 py-1.5 text-right text-[11px] font-semibold text-forest-600">剩余</th>
+                                                                      </tr>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                      {contract.terms.map((term) => {
+                                                                        const termExpanded = expandedTerms.has(term.termId);
+                                                                        const hasRecords = term.paymentRecords && term.paymentRecords.length > 0;
+                                                                        return (
+                                                                          <React.Fragment key={term.termId}>
+                                                                            <tr
+                                                                              className={cn(
+                                                                                "cursor-pointer transition-colors border-b border-forest-100 hover:bg-forest-50/50",
+                                                                                termExpanded && "bg-amber-50/20"
+                                                                              )}
+                                                                              onClick={() => hasRecords && toggleExpand(setExpandedTerms, term.termId)}
+                                                                            >
+                                                                              <td className="px-1.5 py-1.5">
+                                                                                <div className={cn(
+                                                                                  "flex h-4.5 w-4.5 items-center justify-center rounded transition-transform duration-200",
+                                                                                  !hasRecords && "invisible"
+                                                                                )} style={{ transform: termExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                                                                                  <ChevronRight className="h-3 w-3 text-forest-500" />
+                                                                                </div>
+                                                                              </td>
+                                                                              <td className="px-2.5 py-1.5">
+                                                                                <div className="flex items-center gap-1.5">
+                                                                                  <span className="text-xs font-medium text-forest-900">{term.description}</span>
+                                                                                  {term.termNo && (<Badge variant="secondary" className="text-[10px] px-1.5 py-0">第{term.termNo}期</Badge>)}
+                                                                                </div>
+                                                                              </td>
+                                                                              <td className="px-2.5 py-1.5">
+                                                                                <Badge className={cn(getInvoiceStatusBadge(term.invoiceStatus).className, "text-[10px] px-1.5 py-0.5")}>
+                                                                                  {getInvoiceStatusBadge(term.invoiceStatus).label}
+                                                                                </Badge>
+                                                                              </td>
+                                                                              <td className="px-2.5 py-1.5 text-right text-xs tabular-nums text-blue-600">{formatCurrency(term.invoiceAmount)}</td>
+                                                                              <td className="px-2.5 py-1.5 text-right text-xs tabular-nums text-forest-700">{formatCurrency(term.termAmount)}</td>
+                                                                              <td className="px-2.5 py-1.5 text-right text-xs font-semibold tabular-nums text-forest-700">{formatCurrency(term.paidAmount)}</td>
+                                                                              <td className="px-2.5 py-1.5 text-right text-xs font-bold tabular-nums">
+                                                                                <span className={term.remainingAmount > 0 ? "text-amber-600" : "text-forest-600"}>
+                                                                                  {formatCurrency(term.remainingAmount)}
+                                                                                </span>
+                                                                              </td>
+                                                                            </tr>
+                                                                            {termExpanded && hasRecords && (
+                                                                              <tr>
+                                                                                <td colSpan={7} className="p-0 bg-forest-50/30">
+                                                                                  <div className="border-l-4 border-amber-400 pl-2 pr-2 py-1.5 ml-1">
+                                                                                    <div className="overflow-hidden rounded border border-forest-200 bg-white ml-2">
+                                                                                      <div className="bg-amber-100/50 px-2.5 py-1 border-b border-forest-200">
+                                                                                        <span className="text-[10px] font-semibold text-amber-800 uppercase tracking-wider">
+                                                                                          收款流水（{term.paymentRecords.length}笔）
+                                                                                        </span>
+                                                                                      </div>
+                                                                                      <table className="w-full">
+                                                                                        <thead>
+                                                                                          <tr className="border-b border-forest-100 bg-amber-50/40">
+                                                                                            <th className="px-2.5 py-1 text-left text-[10px] font-semibold text-amber-800">日期</th>
+                                                                                            <th className="px-2.5 py-1 text-right text-[10px] font-semibold text-amber-800">金额</th>
+                                                                                            <th className="px-2.5 py-1 text-left text-[10px] font-semibold text-amber-800">方式</th>
+                                                                                            <th className="px-2.5 py-1 text-left text-[10px] font-semibold text-amber-800">流水号</th>
+                                                                                            <th className="px-2.5 py-1 text-left text-[10px] font-semibold text-amber-800">备注</th>
+                                                                                          </tr>
+                                                                                        </thead>
+                                                                                        <tbody>
+                                                                                          {term.paymentRecords.map((rec) => (
+                                                                                            <tr key={rec.recordId} className="border-b border-forest-100 last:border-0">
+                                                                                              <td className="px-2.5 py-1.5">
+                                                                                                <div className="flex items-center gap-1 text-[11px] text-forest-600">
+                                                                                                  <Calendar className="h-3 w-3 text-forest-400" />
+                                                                                                  {formatDate(rec.paymentDate, "date")}
+                                                                                                </div>
+                                                                                              </td>
+                                                                                              <td className="px-2.5 py-1.5 text-right text-[11px] font-semibold tabular-nums text-forest-800">{formatCurrency(rec.amount)}</td>
+                                                                                              <td className="px-2.5 py-1.5">
+                                                                                                <div className="flex items-center gap-1 text-[11px] text-forest-700">
+                                                                                                  <CreditCard className="h-3 w-3 text-forest-400" />
+                                                                                                  {paymentMethodText[rec.paymentMethod] || rec.paymentMethod}
+                                                                                                </div>
+                                                                                              </td>
+                                                                                              <td className="px-2.5 py-1.5 text-[11px] text-forest-600 font-mono">{rec.referenceNo || "-"}</td>
+                                                                                              <td className="px-2.5 py-1.5 text-[11px] text-forest-500">{rec.remark || "-"}</td>
+                                                                                            </tr>
+                                                                                          ))}
+                                                                                        </tbody>
+                                                                                      </table>
+                                                                                    </div>
+                                                                                  </div>
+                                                                                </td>
+                                                                              </tr>
+                                                                            )}
+                                                                          </React.Fragment>
+                                                                        );
+                                                                      })}
+                                                                    </tbody>
+                                                                  </table>
+                                                                </div>
+                                                              </div>
+                                                            </td>
+                                                          </tr>
+                                                        )}
+                                                      </React.Fragment>
+                                                    );
+                                                  })}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    )}
+                                  </React.Fragment>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -899,13 +1481,14 @@ export default function PaymentTracker() {
 
                   {reconciliationSubTab === "contract" && (
                     <div className="overflow-hidden rounded-xl border border-forest-200">
-                      {reconciliationData.byContract.length === 0 ? (
+                      {filteredByContract.length === 0 ? (
                         <EmptyState title="暂无合同对账数据" />
                       ) : (
                         <div className="overflow-x-auto">
                           <table className="w-full">
                             <thead>
                               <tr className="border-b border-forest-200 bg-forest-50">
+                                <th className="w-10 px-2 py-3"></th>
                                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-forest-600">
                                   合同
                                 </th>
@@ -927,41 +1510,205 @@ export default function PaymentTracker() {
                                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-forest-600">
                                   部分收款
                                 </th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-forest-600">
+                                  对账状态
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-forest-600 w-56">
+                                  备注
+                                </th>
                               </tr>
                             </thead>
-                            <tbody className="divide-y divide-forest-100 bg-white">
-                              {reconciliationData.byContract.map((row) => (
-                                <tr key={row.contractId} className="transition-colors hover:bg-forest-50/50">
-                                  <td className="px-4 py-3">
-                                    <div className="flex flex-col">
-                                      <span className="text-sm font-medium text-forest-900">
-                                        {row.contractName}
-                                      </span>
-                                      <span className="text-xs text-forest-500">
-                                        {row.contractNo}
-                                      </span>
-                                    </div>
-                                  </td>
-                                  <td className="px-4 py-3">
-                                    <span className="text-sm text-forest-700">{row.clientName}</span>
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-forest-700">
-                                    {formatCurrency(row.invoicedAmount)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm font-semibold tabular-nums text-forest-700">
-                                    {formatCurrency(row.receivedAmount)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-amber-600">
-                                    {formatCurrency(row.invoicedUnpaid)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-purple-600">
-                                    {formatCurrency(row.uninvoicedPaid)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-teal-600">
-                                    {formatCurrency(row.partialReceived)}
-                                  </td>
-                                </tr>
-                              ))}
+                            <tbody className="bg-white">
+                              {filteredByContract.map((contract) => {
+                                const contractExpanded = expandedContracts.has(contract.contractId);
+                                const saving = isSaving("contract", contract.contractId);
+                                const hasTerms = contract.terms && contract.terms.length > 0;
+                                return (
+                                  <React.Fragment key={contract.contractId}>
+                                    <tr
+                                      className={cn(
+                                        "cursor-pointer transition-colors border-b border-forest-100 hover:bg-forest-50/50",
+                                        contractExpanded && "bg-amber-50/30"
+                                      )}
+                                      onClick={(e) => {
+                                        if ((e.target as HTMLElement).tagName === 'SELECT' || (e.target as HTMLElement).tagName === 'INPUT') return;
+                                        if (hasTerms) toggleExpand(setExpandedContracts, contract.contractId);
+                                      }}
+                                    >
+                                      <td className="px-2 py-3">
+                                        <div className={cn(
+                                          "flex h-6 w-6 items-center justify-center rounded transition-transform duration-200",
+                                          !hasTerms && "invisible"
+                                        )} style={{ transform: contractExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                                          <ChevronRight className="h-4 w-4 text-forest-500" />
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <div className="flex flex-col">
+                                          <span className="text-sm font-medium text-forest-900 flex items-center gap-1.5">
+                                            <FileSpreadsheet className="h-4 w-4 text-forest-400" />
+                                            {contract.contractName}
+                                            {saving && <Loader2 className="h-3 w-3 animate-spin text-forest-400" />}
+                                          </span>
+                                          <span className="text-xs text-forest-500">{contract.contractNo}</span>
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <div className="flex items-center gap-1 text-sm text-forest-700">
+                                          <Users className="h-3.5 w-3.5 text-forest-400" />
+                                          {contract.clientName}
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-forest-700">{formatCurrency(contract.invoicedAmount)}</td>
+                                      <td className="px-4 py-3 text-right text-sm font-semibold tabular-nums text-forest-700">{formatCurrency(contract.receivedAmount)}</td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-amber-600">{formatCurrency(contract.invoicedUnpaid)}</td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-purple-600">{formatCurrency(contract.uninvoicedPaid)}</td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-teal-600">{formatCurrency(contract.partialReceived)}</td>
+                                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                                        <StatusSelect
+                                          value={contract.reconciliationStatus}
+                                          disabled={!selectedMonth}
+                                          onChange={(s) =>
+                                            handleStatusChange("contract", contract.contractId, s, contract.remark)
+                                          }
+                                        />
+                                      </td>
+                                      <td className="px-4 py-3 w-56" onClick={(e) => e.stopPropagation()}>
+                                        <RemarkInput
+                                          value={contract.remark}
+                                          disabled={!selectedMonth}
+                                          onChange={(v) =>
+                                            handleRemarkChange("contract", contract.contractId, v, contract.reconciliationStatus)
+                                          }
+                                          onBlur={() =>
+                                            handleRemarkBlur("contract", contract.contractId, contract.remark || "", contract.reconciliationStatus)
+                                          }
+                                        />
+                                      </td>
+                                    </tr>
+                                    {contractExpanded && hasTerms && (
+                                      <tr className="bg-forest-50/40">
+                                        <td colSpan={10} className="p-0">
+                                          <div className="border-l-4 border-forest-400 pl-2 pr-2 py-3">
+                                            <div className="overflow-hidden rounded-lg border border-forest-200 bg-white ml-4">
+                                              <div className="bg-forest-100/60 px-4 py-2 border-b border-forest-200">
+                                                <span className="text-xs font-semibold text-forest-700 uppercase tracking-wider">
+                                                  付款节点（{contract.terms.length}）
+                                                </span>
+                                              </div>
+                                              <table className="w-full">
+                                                <thead>
+                                                  <tr className="border-b border-forest-100 bg-forest-50/70">
+                                                    <th className="w-8 px-2 py-2"></th>
+                                                    <th className="px-3 py-2 text-left text-xs font-semibold text-forest-600">节点</th>
+                                                    <th className="px-3 py-2 text-left text-xs font-semibold text-forest-600">开票状态</th>
+                                                    <th className="px-3 py-2 text-right text-xs font-semibold text-forest-600">开票</th>
+                                                    <th className="px-3 py-2 text-right text-xs font-semibold text-forest-600">应收</th>
+                                                    <th className="px-3 py-2 text-right text-xs font-semibold text-forest-600">已收</th>
+                                                    <th className="px-3 py-2 text-right text-xs font-semibold text-forest-600">剩余</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {contract.terms.map((term) => {
+                                                    const termExpanded = expandedTerms.has(term.termId);
+                                                    const hasRecords = term.paymentRecords && term.paymentRecords.length > 0;
+                                                    return (
+                                                      <React.Fragment key={term.termId}>
+                                                        <tr
+                                                          className={cn(
+                                                            "cursor-pointer transition-colors border-b border-forest-100 hover:bg-forest-50/50",
+                                                            termExpanded && "bg-amber-50/20"
+                                                          )}
+                                                          onClick={() => hasRecords && toggleExpand(setExpandedTerms, term.termId)}
+                                                        >
+                                                          <td className="px-2 py-2">
+                                                            <div className={cn(
+                                                              "flex h-5 w-5 items-center justify-center rounded transition-transform duration-200",
+                                                              !hasRecords && "invisible"
+                                                            )} style={{ transform: termExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                                                              <ChevronRight className="h-3.5 w-3.5 text-forest-500" />
+                                                            </div>
+                                                          </td>
+                                                          <td className="px-3 py-2">
+                                                            <div className="flex items-center gap-1.5">
+                                                              <span className="text-xs font-medium text-forest-900">{term.description}</span>
+                                                              {term.termNo && (<Badge variant="secondary" className="text-[10px] px-1.5 py-0">第{term.termNo}期</Badge>)}
+                                                            </div>
+                                                          </td>
+                                                          <td className="px-3 py-2">
+                                                            <Badge className={cn(getInvoiceStatusBadge(term.invoiceStatus).className, "text-[10px] px-1.5 py-0.5")}>
+                                                              {getInvoiceStatusBadge(term.invoiceStatus).label}
+                                                            </Badge>
+                                                          </td>
+                                                          <td className="px-3 py-2 text-right text-xs tabular-nums text-blue-600">{formatCurrency(term.invoiceAmount)}</td>
+                                                          <td className="px-3 py-2 text-right text-xs tabular-nums text-forest-700">{formatCurrency(term.termAmount)}</td>
+                                                          <td className="px-3 py-2 text-right text-xs font-semibold tabular-nums text-forest-700">{formatCurrency(term.paidAmount)}</td>
+                                                          <td className="px-3 py-2 text-right text-xs font-bold tabular-nums">
+                                                            <span className={term.remainingAmount > 0 ? "text-amber-600" : "text-forest-600"}>
+                                                              {formatCurrency(term.remainingAmount)}
+                                                            </span>
+                                                          </td>
+                                                        </tr>
+                                                        {termExpanded && hasRecords && (
+                                                          <tr>
+                                                            <td colSpan={7} className="p-0 bg-forest-50/30">
+                                                              <div className="border-l-4 border-amber-400 pl-2 pr-2 py-2 ml-1">
+                                                                <div className="overflow-hidden rounded border border-forest-200 bg-white ml-3">
+                                                                  <div className="bg-amber-100/50 px-3 py-1.5 border-b border-forest-200">
+                                                                    <span className="text-[11px] font-semibold text-amber-800 uppercase tracking-wider">
+                                                                      收款流水（{term.paymentRecords.length}笔）
+                                                                    </span>
+                                                                  </div>
+                                                                  <table className="w-full">
+                                                                    <thead>
+                                                                      <tr className="border-b border-forest-100 bg-amber-50/40">
+                                                                        <th className="px-2.5 py-1.5 text-left text-[11px] font-semibold text-amber-800">日期</th>
+                                                                        <th className="px-2.5 py-1.5 text-right text-[11px] font-semibold text-amber-800">金额</th>
+                                                                        <th className="px-2.5 py-1.5 text-left text-[11px] font-semibold text-amber-800">方式</th>
+                                                                        <th className="px-2.5 py-1.5 text-left text-[11px] font-semibold text-amber-800">流水号</th>
+                                                                        <th className="px-2.5 py-1.5 text-left text-[11px] font-semibold text-amber-800">备注</th>
+                                                                      </tr>
+                                                                    </thead>
+                                                                    <tbody>
+                                                                      {term.paymentRecords.map((rec) => (
+                                                                        <tr key={rec.recordId} className="border-b border-forest-100 last:border-0">
+                                                                          <td className="px-2.5 py-1.5">
+                                                                            <div className="flex items-center gap-1 text-[11px] text-forest-600">
+                                                                              <Calendar className="h-3 w-3 text-forest-400" />
+                                                                              {formatDate(rec.paymentDate, "date")}
+                                                                            </div>
+                                                                          </td>
+                                                                          <td className="px-2.5 py-1.5 text-right text-[11px] font-semibold tabular-nums text-forest-800">{formatCurrency(rec.amount)}</td>
+                                                                          <td className="px-2.5 py-1.5">
+                                                                            <div className="flex items-center gap-1 text-[11px] text-forest-700">
+                                                                              <CreditCard className="h-3 w-3 text-forest-400" />
+                                                                              {paymentMethodText[rec.paymentMethod] || rec.paymentMethod}
+                                                                            </div>
+                                                                          </td>
+                                                                          <td className="px-2.5 py-1.5 text-[11px] text-forest-600 font-mono">{rec.referenceNo || "-"}</td>
+                                                                          <td className="px-2.5 py-1.5 text-[11px] text-forest-500">{rec.remark || "-"}</td>
+                                                                        </tr>
+                                                                      ))}
+                                                                    </tbody>
+                                                                  </table>
+                                                                </div>
+                                                              </div>
+                                                            </td>
+                                                          </tr>
+                                                        )}
+                                                      </React.Fragment>
+                                                    );
+                                                  })}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    )}
+                                  </React.Fragment>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -971,13 +1718,14 @@ export default function PaymentTracker() {
 
                   {reconciliationSubTab === "term" && (
                     <div className="overflow-hidden rounded-xl border border-forest-200">
-                      {reconciliationData.byTerm.length === 0 ? (
+                      {filteredByTerm.length === 0 ? (
                         <EmptyState title="暂无付款节点对账数据" />
                       ) : (
                         <div className="overflow-x-auto">
                           <table className="w-full">
                             <thead>
                               <tr className="border-b border-forest-200 bg-forest-50">
+                                <th className="w-10 px-2 py-3"></th>
                                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-forest-600">
                                   节点描述
                                 </th>
@@ -1002,50 +1750,153 @@ export default function PaymentTracker() {
                                 <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-forest-600">
                                   剩余未收
                                 </th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-forest-600">
+                                  对账状态
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-forest-600 w-56">
+                                  备注
+                                </th>
                               </tr>
                             </thead>
-                            <tbody className="divide-y divide-forest-100 bg-white">
-                              {reconciliationData.byTerm.map((row) => (
-                                <tr key={row.termId} className="transition-colors hover:bg-forest-50/50">
-                                  <td className="px-4 py-3">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-sm font-medium text-forest-900">
-                                        {row.description}
-                                      </span>
-                                      {row.termNo && (
-                                        <Badge variant="secondary">第{row.termNo}期</Badge>
+                            <tbody className="bg-white">
+                              {filteredByTerm.map((term) => {
+                                const termExpanded = expandedTerms.has(term.termId);
+                                const saving = isSaving("term", term.termId);
+                                const hasRecords = term.paymentRecords && term.paymentRecords.length > 0;
+                                return (
+                                  <React.Fragment key={term.termId}>
+                                    <tr
+                                      className={cn(
+                                        "cursor-pointer transition-colors border-b border-forest-100 hover:bg-forest-50/50",
+                                        termExpanded && "bg-amber-50/30"
                                       )}
-                                    </div>
-                                  </td>
-                                  <td className="px-4 py-3">
-                                    <span className="text-sm text-forest-600">{row.contractNo}</span>
-                                  </td>
-                                  <td className="px-4 py-3">
-                                    <span className="text-sm text-forest-700">{row.clientName}</span>
-                                  </td>
-                                  <td className="px-4 py-3">
-                                    <Badge className={getInvoiceStatusBadge(row.invoiceStatus).className}>
-                                      {getInvoiceStatusBadge(row.invoiceStatus).label}
-                                    </Badge>
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-blue-600">
-                                    {formatCurrency(row.invoiceAmount)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm tabular-nums text-forest-700">
-                                    {formatCurrency(row.termAmount)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm font-semibold tabular-nums text-forest-700">
-                                    {formatCurrency(row.paidAmount)}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm font-bold tabular-nums">
-                                    <span className={cn(
-                                      row.remainingAmount > 0 ? "text-amber-600" : "text-forest-600"
-                                    )}>
-                                      {formatCurrency(row.remainingAmount)}
-                                    </span>
-                                  </td>
-                                </tr>
-                              ))}
+                                      onClick={(e) => {
+                                        if ((e.target as HTMLElement).tagName === 'SELECT' || (e.target as HTMLElement).tagName === 'INPUT') return;
+                                        if (hasRecords) toggleExpand(setExpandedTerms, term.termId);
+                                      }}
+                                    >
+                                      <td className="px-2 py-3">
+                                        <div className={cn(
+                                          "flex h-6 w-6 items-center justify-center rounded transition-transform duration-200",
+                                          !hasRecords && "invisible"
+                                        )} style={{ transform: termExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                                          <ChevronRight className="h-4 w-4 text-forest-500" />
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-sm font-medium text-forest-900 flex items-center gap-1.5">
+                                            <ClipboardList className="h-4 w-4 text-forest-400" />
+                                            {term.description}
+                                            {saving && <Loader2 className="h-3 w-3 animate-spin text-forest-400" />}
+                                          </span>
+                                          {term.termNo && (
+                                            <Badge variant="secondary">第{term.termNo}期</Badge>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <span className="text-sm text-forest-600">{term.contractNo}</span>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <div className="flex items-center gap-1 text-sm text-forest-700">
+                                          <Users className="h-3.5 w-3.5 text-forest-400" />
+                                          {term.clientName}
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <Badge className={getInvoiceStatusBadge(term.invoiceStatus).className}>
+                                          {getInvoiceStatusBadge(term.invoiceStatus).label}
+                                        </Badge>
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-blue-600">
+                                        {formatCurrency(term.invoiceAmount)}
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm tabular-nums text-forest-700">
+                                        {formatCurrency(term.termAmount)}
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm font-semibold tabular-nums text-forest-700">
+                                        {formatCurrency(term.paidAmount)}
+                                      </td>
+                                      <td className="px-4 py-3 text-right text-sm font-bold tabular-nums">
+                                        <span className={cn(
+                                          term.remainingAmount > 0 ? "text-amber-600" : "text-forest-600"
+                                        )}>
+                                          {formatCurrency(term.remainingAmount)}
+                                        </span>
+                                      </td>
+                                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                                        <StatusSelect
+                                          value={term.reconciliationStatus}
+                                          disabled={!selectedMonth}
+                                          onChange={(s) =>
+                                            handleStatusChange("term", term.termId, s, term.remark)
+                                          }
+                                        />
+                                      </td>
+                                      <td className="px-4 py-3 w-56" onClick={(e) => e.stopPropagation()}>
+                                        <RemarkInput
+                                          value={term.remark}
+                                          disabled={!selectedMonth}
+                                          onChange={(v) =>
+                                            handleRemarkChange("term", term.termId, v, term.reconciliationStatus)
+                                          }
+                                          onBlur={() =>
+                                            handleRemarkBlur("term", term.termId, term.remark || "", term.reconciliationStatus)
+                                          }
+                                        />
+                                      </td>
+                                    </tr>
+                                    {termExpanded && hasRecords && (
+                                      <tr className="bg-forest-50/40">
+                                        <td colSpan={11} className="p-0">
+                                          <div className="border-l-4 border-amber-400 pl-2 pr-2 py-3">
+                                            <div className="overflow-hidden rounded-lg border border-forest-200 bg-white ml-4">
+                                              <div className="bg-amber-100/50 px-4 py-2 border-b border-forest-200">
+                                                <span className="text-xs font-semibold text-amber-800 uppercase tracking-wider">
+                                                  收款流水（{term.paymentRecords.length}笔）
+                                                </span>
+                                              </div>
+                                              <table className="w-full">
+                                                <thead>
+                                                  <tr className="border-b border-forest-100 bg-amber-50/40">
+                                                    <th className="px-4 py-2 text-left text-xs font-semibold text-amber-800">日期</th>
+                                                    <th className="px-4 py-2 text-right text-xs font-semibold text-amber-800">金额</th>
+                                                    <th className="px-4 py-2 text-left text-xs font-semibold text-amber-800">方式</th>
+                                                    <th className="px-4 py-2 text-left text-xs font-semibold text-amber-800">流水号</th>
+                                                    <th className="px-4 py-2 text-left text-xs font-semibold text-amber-800">备注</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {term.paymentRecords.map((rec) => (
+                                                    <tr key={rec.recordId} className="border-b border-forest-100 last:border-0 hover:bg-amber-50/30">
+                                                      <td className="px-4 py-2">
+                                                        <div className="flex items-center gap-1.5 text-sm text-forest-600">
+                                                          <Calendar className="h-3.5 w-3.5 text-forest-400" />
+                                                          {formatDate(rec.paymentDate, "date")}
+                                                        </div>
+                                                      </td>
+                                                      <td className="px-4 py-2 text-right text-sm font-semibold tabular-nums text-forest-800">{formatCurrency(rec.amount)}</td>
+                                                      <td className="px-4 py-2">
+                                                        <div className="flex items-center gap-1.5 text-sm text-forest-700">
+                                                          <CreditCard className="h-3.5 w-3.5 text-forest-400" />
+                                                          {paymentMethodText[rec.paymentMethod] || rec.paymentMethod}
+                                                        </div>
+                                                      </td>
+                                                      <td className="px-4 py-2 text-sm text-forest-600 font-mono">{rec.referenceNo || "-"}</td>
+                                                      <td className="px-4 py-2 text-sm text-forest-500">{rec.remark || "-"}</td>
+                                                    </tr>
+                                                  ))}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    )}
+                                  </React.Fragment>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>

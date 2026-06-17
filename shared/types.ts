@@ -95,6 +95,17 @@ export interface ReminderRecord {
   createdAt: string
 }
 
+export interface ReconciliationRecord {
+  id: string
+  month: string
+  entityType: 'client' | 'contract' | 'term'
+  entityId: string
+  status: 'verified' | 'pending' | 'discrepancy'
+  remark: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface ApiResponse<T> {
   success: boolean
   data?: T

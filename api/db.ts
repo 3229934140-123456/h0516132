@@ -6,6 +6,7 @@ import type {
   ProjectFile,
   PaymentRecord,
   ReminderRecord,
+  ReconciliationRecord,
 } from '../shared/types.js'
 
 const generateId = (): string => {
@@ -26,6 +27,7 @@ class Database {
   private projectFiles = new Map<string, ProjectFile>()
   private paymentRecords = new Map<string, PaymentRecord>()
   private reminderRecords = new Map<string, ReminderRecord>()
+  private reconciliationRecords = new Map<string, ReconciliationRecord>()
 
   constructor() {
     this.initSeedData()
@@ -446,6 +448,69 @@ class Database {
       },
     ]
 
+    const seedReconciliation: ReconciliationRecord[] = [
+      {
+        id: 'rec1',
+        month: '2025-04',
+        entityType: 'client',
+        entityId: 'c1',
+        status: 'verified',
+        remark: '4月账务已核对无误',
+        createdAt: '2025-05-05T10:00:00.000Z',
+        updatedAt: '2025-05-05T10:00:00.000Z',
+      },
+      {
+        id: 'rec2',
+        month: '2025-04',
+        entityType: 'contract',
+        entityId: 'k1',
+        status: 'verified',
+        remark: 'OA系统两笔款项均已到账',
+        createdAt: '2025-05-05T10:00:00.000Z',
+        updatedAt: '2025-05-05T10:00:00.000Z',
+      },
+      {
+        id: 'rec3',
+        month: '2025-04',
+        entityType: 'term',
+        entityId: 'pt2',
+        status: 'verified',
+        remark: '',
+        createdAt: '2025-05-05T10:00:00.000Z',
+        updatedAt: '2025-05-05T10:00:00.000Z',
+      },
+      {
+        id: 'rec4',
+        month: '2025-04',
+        entityType: 'term',
+        entityId: 'pt6',
+        status: 'pending',
+        remark: '开票金额与付款金额不一致，需进一步核实',
+        createdAt: '2025-05-06T14:00:00.000Z',
+        updatedAt: '2025-05-06T14:00:00.000Z',
+      },
+      {
+        id: 'rec5',
+        month: '2025-05',
+        entityType: 'client',
+        entityId: 'c2',
+        status: 'discrepancy',
+        remark: '5月开票INV-2025-0033客户表示未收到发票',
+        createdAt: '2025-06-10T11:00:00.000Z',
+        updatedAt: '2025-06-10T11:00:00.000Z',
+      },
+      {
+        id: 'rec6',
+        month: '2025-05',
+        entityType: 'term',
+        entityId: 'pt5',
+        status: 'discrepancy',
+        remark: '已开票未收到款，电话联系中',
+        createdAt: '2025-06-10T11:00:00.000Z',
+        updatedAt: '2025-06-10T11:00:00.000Z',
+      },
+    ]
+
     seedClients.forEach((c) => this.clients.set(c.id, c))
     seedContracts.forEach((c) => this.contracts.set(c.id, c))
     seedPaymentTerms.forEach((p) => this.paymentTerms.set(p.id, p))
@@ -453,6 +518,7 @@ class Database {
     seedProjectFiles.forEach((f) => this.projectFiles.set(f.id, f))
     seedPaymentRecords.forEach((r) => this.paymentRecords.set(r.id, r))
     seedReminders.forEach((r) => this.reminderRecords.set(r.id, r))
+    seedReconciliation.forEach((r) => this.reconciliationRecords.set(r.id, r))
   }
 
   // ============ Clients ============
@@ -721,6 +787,41 @@ class Database {
     }
     this.reminderRecords.set(reminder.id, reminder)
     return reminder
+  }
+
+  // ============ Reconciliation Records ============
+  getReconciliationByMonth(month: string): ReconciliationRecord[] {
+    return Array.from(this.reconciliationRecords.values()).filter((r) => r.month === month)
+  }
+
+  upsertReconciliation(
+    data: Pick<ReconciliationRecord, 'month' | 'entityType' | 'entityId' | 'status' | 'remark'>,
+  ): ReconciliationRecord {
+    const existing = Array.from(this.reconciliationRecords.values()).find(
+      (r) => r.month === data.month && r.entityType === data.entityType && r.entityId === data.entityId,
+    )
+    if (existing) {
+      const updated: ReconciliationRecord = {
+        ...existing,
+        status: data.status,
+        remark: data.remark,
+        updatedAt: now(),
+      }
+      this.reconciliationRecords.set(existing.id, updated)
+      return updated
+    }
+    const record: ReconciliationRecord = {
+      id: generateId(),
+      month: data.month,
+      entityType: data.entityType,
+      entityId: data.entityId,
+      status: data.status,
+      remark: data.remark,
+      createdAt: now(),
+      updatedAt: now(),
+    }
+    this.reconciliationRecords.set(record.id, record)
+    return record
   }
 }
 

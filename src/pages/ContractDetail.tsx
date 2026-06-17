@@ -22,6 +22,7 @@ import {
   MoreHorizontal,
   Receipt,
   Clock,
+  Loader2,
 } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import {
@@ -38,6 +39,7 @@ import {
   ModalBody,
   ModalFooter,
 } from '@/components/ui/Modal'
+import { useToast } from '@/components/ui/Toast'
 import { useStore, type PaymentTermDetail as StorePaymentTermDetail, type ReminderRecord, type PaymentRecordWithDetails } from '@/store/useStore'
 import { formatCurrency, formatDate } from '@/utils/format'
 import { cn } from '@/lib/utils'
@@ -104,6 +106,7 @@ export default function ContractDetail() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
   const { projects, paymentTerms, fetchPaymentTerms, updatePaymentTermInvoice, fetchPaymentTermDetail, createReminder } = useStore()
+  const { showToast } = useToast()
   const [contract, setContract] = useState<ContractDetailData | null>(null)
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
@@ -118,6 +121,7 @@ export default function ContractDetail() {
   const [expandedTermId, setExpandedTermId] = useState<string | null>(null)
   const [expandedTermData, setExpandedTermData] = useState<Record<string, ExpandedTermData>>({})
   const [loadingTermId, setLoadingTermId] = useState<string | null>(null)
+  const [refreshingTermId, setRefreshingTermId] = useState<string | null>(null)
   const [reminderModalOpen, setReminderModalOpen] = useState(false)
   const [reminderTermId, setReminderTermId] = useState<string | null>(null)
   const [reminderForm, setReminderForm] = useState({
@@ -215,8 +219,19 @@ export default function ContractDetail() {
 
     const success = await updatePaymentTermInvoice(selectedTerm.id, data)
     if (success) {
+      showToast('保存成功 ✓', 'success')
+      if (expandedTermId === selectedTerm.id) {
+        setRefreshingTermId(selectedTerm.id)
+        const detail = await fetchPaymentTermDetail(selectedTerm.id)
+        if (detail) {
+          setExpandedTermData((prev) => ({ ...prev, [selectedTerm.id]: detail }))
+        }
+        setRefreshingTermId(null)
+      }
       setInvoiceModalOpen(false)
       setSelectedTerm(null)
+    } else {
+      showToast('保存失败，请重试', 'error')
     }
   }
 
@@ -249,12 +264,17 @@ export default function ContractDetail() {
       content: reminderForm.content.trim(),
     })
     if (success) {
+      showToast('催款记录已添加 ✓', 'success')
+      setRefreshingTermId(reminderTermId)
       const detail = await fetchPaymentTermDetail(reminderTermId)
       if (detail) {
         setExpandedTermData((prev) => ({ ...prev, [reminderTermId]: detail }))
       }
+      setRefreshingTermId(null)
       setReminderModalOpen(false)
       setReminderTermId(null)
+    } else {
+      showToast('添加失败，请重试', 'error')
     }
   }
 
@@ -320,8 +340,18 @@ export default function ContractDetail() {
   const paidPercentage = contract.amount > 0 ? Math.round((totalPaid / contract.amount) * 100) : 0
 
   const contractPaymentTerms = paymentTerms
-    .filter((t) => t.contractId === id)
-    .sort((a, b) => a.termNo - b.termNo)
+                    .filter((t) => t.contractId === id)
+                    .sort((a, b) => a.termNo - b.termNo)
+                    .map((term) => {
+                      const localTerm = contract?.paymentTerms?.find((t) => t.id === term.id)
+                      return {
+                        ...term,
+                        invoiceStatus: localTerm?.invoiceStatus || term.invoiceStatus,
+                        invoiceAmount: localTerm?.invoiceAmount ?? term.invoiceAmount,
+                        invoiceDate: localTerm?.invoiceDate || term.invoiceDate,
+                        invoiceNo: localTerm?.invoiceNo || term.invoiceNo,
+                      }
+                    })
 
   return (
     <Layout title="合同详情">
@@ -482,6 +512,7 @@ export default function ContractDetail() {
                     const isExpanded = expandedTermId === term.id
                     const termData = expandedTermData[term.id]
                     const isLoadingTerm = loadingTermId === term.id
+                    const isRefreshing = refreshingTermId === term.id
                     const remainingAmount = term.amount - (term.paidAmount || 0)
                     const progress = term.amount > 0 ? Math.round(((term.paidAmount || 0) / term.amount) * 100) : 0
 
@@ -564,11 +595,32 @@ export default function ContractDetail() {
                                   <h4 className="mb-3 flex items-center gap-2 text-sm font-medium text-forest-700">
                                     <Receipt className="h-4 w-4" />
                                     开票信息
+                                    {isRefreshing && (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin text-forest-500" />
+                                    )}
                                   </h4>
-                                  {termData.invoices.length > 0 ? (
+                                  {isRefreshing && !termData.invoices.length ? (
+                                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                      {[0, 1, 2, 3].map((i) => (
+                                        <div key={i} className="rounded-lg border border-forest-200 bg-white p-3 animate-pulse">
+                                          <div className="h-4 w-16 bg-forest-100 rounded mb-2" />
+                                          <div className="h-5 w-20 bg-forest-100 rounded mt-1" />
+                                          <div className="mt-2 h-4 w-12 bg-forest-100 rounded mb-1" />
+                                          <div className="h-5 w-24 bg-forest-100 rounded" />
+                                          <div className="mt-2 h-4 w-12 bg-forest-100 rounded mb-1" />
+                                          <div className="h-4 w-20 bg-forest-100 rounded" />
+                                          <div className="mt-2 h-4 w-12 bg-forest-100 rounded mb-1" />
+                                          <div className="h-4 w-28 bg-forest-100 rounded" />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : termData.invoices.length > 0 ? (
                                     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                                       {termData.invoices.map((inv, i) => (
-                                        <div key={i} className="rounded-lg border border-forest-200 bg-white p-3">
+                                        <div key={i} className={cn(
+                                          'rounded-lg border bg-white p-3 transition-opacity',
+                                          isRefreshing ? 'opacity-70' : 'border-forest-200'
+                                        )}>
                                           <p className="text-xs text-forest-500">开票状态</p>
                                           <Badge className={getInvoiceStatusBadge(inv.invoiceStatus).className + ' mt-1'}>
                                             {getInvoiceStatusBadge(inv.invoiceStatus).label}
@@ -609,9 +661,15 @@ export default function ContractDetail() {
                                   <h4 className="mb-3 flex items-center gap-2 text-sm font-medium text-forest-700">
                                     <DollarSign className="h-4 w-4" />
                                     收款流水
+                                    {isRefreshing && (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin text-forest-500" />
+                                    )}
                                   </h4>
                                   {termData.paymentRecords.length > 0 ? (
-                                    <div className="overflow-x-auto rounded-lg border border-forest-200">
+                                    <div className={cn(
+                                      'overflow-x-auto rounded-lg border border-forest-200 transition-opacity',
+                                      isRefreshing && 'opacity-70'
+                                    )}>
                                       <table className="w-full text-sm">
                                         <thead className="bg-forest-50">
                                           <tr>
@@ -652,8 +710,14 @@ export default function ContractDetail() {
                                   <h4 className="mb-3 flex items-center gap-2 text-sm font-medium text-forest-700">
                                     <Clock className="h-4 w-4" />
                                     剩余未收
+                                    {isRefreshing && (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin text-forest-500" />
+                                    )}
                                   </h4>
-                                  <div className="rounded-lg border border-forest-200 bg-white p-4">
+                                  <div className={cn(
+                                    'rounded-lg border border-forest-200 bg-white p-4 transition-opacity',
+                                    isRefreshing && 'opacity-70'
+                                  )}>
                                     <div className="mb-3 flex items-baseline justify-between">
                                       <span className="text-3xl font-bold text-forest-900">
                                         {formatCurrency(remainingAmount)}
@@ -683,6 +747,9 @@ export default function ContractDetail() {
                                     <h4 className="flex items-center gap-2 text-sm font-medium text-forest-700">
                                       <MessageCircle className="h-4 w-4" />
                                       催款记录
+                                      {isRefreshing && (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin text-forest-500" />
+                                      )}
                                     </h4>
                                     <Button
                                       size="sm"
@@ -697,7 +764,10 @@ export default function ContractDetail() {
                                     </Button>
                                   </div>
                                   {termData.reminders.length > 0 ? (
-                                    <div className="space-y-2">
+                                    <div className={cn(
+                                      'space-y-2 transition-opacity',
+                                      isRefreshing && 'opacity-70'
+                                    )}>
                                       {termData.reminders.map((reminder) => (
                                         <div
                                           key={reminder.id}

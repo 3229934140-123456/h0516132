@@ -244,27 +244,17 @@ router.put('/:id', async (req: Request, res: Response): Promise<void> => {
     if (paymentTerms && Array.isArray(paymentTerms)) {
       const existingTerms = db.getPaymentTermsByContractId(id)
       const existingTermMap = new Map(existingTerms.map((t) => [t.id, t]))
-      const inputTermIds = new Set(paymentTerms.map((t) => t.id).filter(Boolean) as string[])
+      const inputTermIds = new Set<string>()
 
       for (const term of paymentTerms) {
         if (term.id && existingTermMap.has(term.id)) {
-          const existingTerm = existingTermMap.get(term.id)!
-          if (existingTerm.paidAmount > 0 || existingTerm.invoiceStatus !== 'uninvoiced') {
-            db.updatePaymentTerm(term.id, {
-              description: term.description,
-              amount: term.amount,
-              dueDate: term.dueDate,
-            })
-          } else {
-            db.deletePaymentTerm(term.id)
-            db.createPaymentTerm({
-              ...term,
-              contractId: id,
-              termNo: term.termNo,
-              status: term.status || 'pending',
-              paidAmount: term.paidAmount || 0,
-            })
-          }
+          inputTermIds.add(term.id)
+          db.updatePaymentTerm(term.id, {
+            description: term.description,
+            amount: term.amount,
+            dueDate: term.dueDate,
+            termNo: term.termNo,
+          })
         } else {
           db.createPaymentTerm({
             ...term,

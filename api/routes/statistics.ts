@@ -1,15 +1,15 @@
-import { Router, type Request, type Response } from 'express'
-import { db } from '../db.js'
+import { Router, type Request, type Response } from 'express';
+import { db } from '../db.js';
 
-const router = Router()
+const router = Router();
 
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   try {
-    const clients = db.getClients()
-    const contracts = db.getContracts()
-    const projects = db.getProjects()
-    const paymentRecords = db.getPaymentRecords()
-    const paymentTerms = db.getPaymentTerms()
+    const clients = db.getClients();
+    const contracts = db.getContracts();
+    const projects = db.getProjects();
+    const paymentRecords = db.getPaymentRecords();
+    const paymentTerms = db.getPaymentTerms();
 
     const now = new Date()
     const currentYear = now.getFullYear()
@@ -305,59 +305,89 @@ router.get('/reconciliation', async (req: Request, res: Response): Promise<void>
     }
 
     const paymentTerms = db.getPaymentTerms()
-    const paymentRecords = db.getPaymentRecords()
+    const allPaymentRecords = db.getPaymentRecords()
     const clients = db.getClients()
     const contracts = db.getContracts()
 
-    const filteredTerms = paymentTerms.filter((t) => {
-      if (!monthStr) return true
-      return isInMonth(t.invoiceDate) || paymentRecords.some((r) => r.paymentTermId === t.id && isInMonth(r.paymentDate))
-    })
+    const monthInvoices = paymentTerms.filter((t) => isInMonth(t.invoiceDate))
+    const monthPayments = allPaymentRecords.filter((r) => isInMonth(r.paymentDate))
 
-    const filteredRecords = paymentRecords.filter((r) => isInMonth(r.paymentDate))
+    const monthInvoiceIds = new Set(monthInvoices.map((t) => t.id))
+    const invoiceTermPayments = allPaymentRecords.filter(
+      (r) => r.paymentTermId && monthInvoiceIds.has(r.paymentTermId),
+    )
 
-    const termRecordsMap = new Map<string, number>()
-    filteredRecords.forEach((r) => {
+    const termPaidForInvoices = new Map<string, number>()
+    invoiceTermPayments.forEach((r) => {
       if (r.paymentTermId) {
-        termRecordsMap.set(r.paymentTermId, (termRecordsMap.get(r.paymentTermId) || 0) + r.amount)
+        termPaidForInvoices.set(
+          r.paymentTermId,
+          (termPaidForInvoices.get(r.paymentTermId) || 0) + r.amount,
+        )
       }
     })
 
-    const byTerm = filteredTerms.map((t) => {
+    const termMonthPayments = new Map<string, number>()
+    monthPayments.forEach((r) => {
+      if (r.paymentTermId) {
+        termMonthPayments.set(
+          r.paymentTermId,
+          (termMonthPayments.get(r.paymentTermId) || 0) + r.amount,
+        )
+      }
+    })
+
+    const relevantTermIds = new Set<string>()
+    monthInvoices.forEach((t) => relevantTermIds.add(t.id))
+    monthPayments.forEach((r) => {
+      if (r.paymentTermId) relevantTermIds.add(r.paymentTermId)
+    })
+
+    const byTerm = Array.from(relevantTermIds).map((termId) => {
+      const t = paymentTerms.find((pt) => pt.id === termId)!
       const contract = db.getContractById(t.contractId)
       const client = contract ? db.getClientById(contract.clientId) : undefined
-      const paidAmount = termRecordsMap.get(t.id) || t.paidAmount || 0
-      const remainingAmount = t.amount - paidAmount
 
-      let invoicedUnpaid = 0
-      let uninvoicedPaid = 0
-      let partialReceived = 0
+      const invoiceAmount = monthStr
+        ? isInMonth(t.invoiceDate)
+          ? t.invoiceAmount || 0
+          : 0
+        : t.invoiceAmount || 0
 
-      const invoiceAmount = t.invoiceAmount || 0
-      if (t.invoiceStatus === 'invoiced' || t.invoiceStatus === 'partial_invoiced') {
-        if (paidAmount < invoiceAmount) {
-          invoicedUnpaid = invoiceAmount - paidAmount
-        }
-      }
-      if ((!t.invoiceStatus || t.invoiceStatus === 'uninvoiced') && paidAmount > 0) {
-        uninvoicedPaid = paidAmount
-      }
-      if (paidAmount > 0 && paidAmount < t.amount) {
-        partialReceived = paidAmount
-      }
+      const receivedAmount = monthStr
+        ? termMonthPayments.get(t.id) || 0
+        : allPaymentRecords
+            .filter((r) => r.paymentTermId === t.id)
+            .reduce((s, r) => s + r.amount, 0) || t.paidAmount || 0
+
+      const paidAgainstInvoice = monthStr
+        ? termPaidForInvoices.get(t.id) || 0
+        : receivedAmount
+
+      const invoicedUnpaid = invoiceAmount > 0 ? Math.max(0, invoiceAmount - paidAgainstInvoice) : 0
+
+      const uninvoicedPaid =
+        invoiceAmount === 0 && receivedAmount > 0 ? receivedAmount : Math.max(0, receivedAmount - invoiceAmount)
+
+      const partialReceived =
+        receivedAmount > 0 && receivedAmount < t.amount ? receivedAmount : 0
+
+      const remainingAmount = t.amount - (t.paidAmount || 0)
 
       return {
         termId: t.id,
         termNo: t.termNo,
         description: t.description,
+        contractId: t.contractId,
         contractNo: contract?.contractNo,
+        clientId: contract?.clientId,
         clientName: client?.name,
         invoiceStatus: t.invoiceStatus,
-        invoiceAmount: t.invoiceAmount || 0,
+        invoiceAmount,
         invoiceDate: t.invoiceDate,
         invoiceNo: t.invoiceNo,
         termAmount: t.amount,
-        paidAmount,
+        paidAmount: receivedAmount,
         remainingAmount,
         status: t.status,
         invoicedUnpaid,
@@ -370,6 +400,7 @@ router.get('/reconciliation', async (req: Request, res: Response): Promise<void>
       contractId: string
       contractNo: string
       contractName: string
+      clientId: string
       clientName: string
       invoicedAmount: number
       receivedAmount: number
@@ -379,15 +410,16 @@ router.get('/reconciliation', async (req: Request, res: Response): Promise<void>
     }>()
 
     byTerm.forEach((t) => {
-      const contract = contracts.find((c) => c.contractNo === t.contractNo)
-      if (!contract) return
-      if (!contractMap.has(contract.id)) {
-        const client = clients.find((c) => c.id === contract.clientId)
-        contractMap.set(contract.id, {
-          contractId: contract.id,
-          contractNo: contract.contractNo,
-          contractName: contract.name,
-          clientName: client?.name || '',
+      if (!t.contractId) return
+      if (!contractMap.has(t.contractId)) {
+        const contract = contracts.find((c) => c.id === t.contractId)
+        const client = contract ? clients.find((c) => c.id === contract.clientId) : undefined
+        contractMap.set(t.contractId, {
+          contractId: t.contractId,
+          contractNo: contract?.contractNo || '',
+          contractName: contract?.name || '',
+          clientId: contract?.clientId || '',
+          clientName: client?.name || t.clientName || '',
           invoicedAmount: 0,
           receivedAmount: 0,
           invoicedUnpaid: 0,
@@ -395,7 +427,7 @@ router.get('/reconciliation', async (req: Request, res: Response): Promise<void>
           partialReceived: 0,
         })
       }
-      const entry = contractMap.get(contract.id)!
+      const entry = contractMap.get(t.contractId)!
       entry.invoicedAmount += t.invoiceAmount
       entry.receivedAmount += t.paidAmount
       entry.invoicedUnpaid += t.invoicedUnpaid
@@ -416,11 +448,10 @@ router.get('/reconciliation', async (req: Request, res: Response): Promise<void>
     }>()
 
     byContract.forEach((c) => {
-      const client = clients.find((cl) => cl.name === c.clientName)
-      const clientId = client?.id || c.clientName
-      if (!clientMap.has(clientId)) {
-        clientMap.set(clientId, {
-          clientId,
+      if (!c.clientId) return
+      if (!clientMap.has(c.clientId)) {
+        clientMap.set(c.clientId, {
+          clientId: c.clientId,
           clientName: c.clientName,
           invoicedAmount: 0,
           receivedAmount: 0,
@@ -429,7 +460,7 @@ router.get('/reconciliation', async (req: Request, res: Response): Promise<void>
           partialReceived: 0,
         })
       }
-      const entry = clientMap.get(clientId)!
+      const entry = clientMap.get(c.clientId)!
       entry.invoicedAmount += c.invoicedAmount
       entry.receivedAmount += c.receivedAmount
       entry.invoicedUnpaid += c.invoicedUnpaid
@@ -447,13 +478,43 @@ router.get('/reconciliation', async (req: Request, res: Response): Promise<void>
       partialReceived: byClient.reduce((sum, c) => sum + c.partialReceived, 0),
     }
 
+    const allRecs = monthStr ? db.getReconciliationByMonth(monthStr) : []
+    const recMapByClient = new Map<string, { status: string; remark: string }>()
+    const recMapByContract = new Map<string, { status: string; remark: string }>()
+    const recMapByTerm = new Map<string, { status: string; remark: string }>()
+
+    allRecs.forEach((r) => {
+      if (r.entityType === 'client') {
+        recMapByClient.set(r.entityId, { status: r.status, remark: r.remark })
+      } else if (r.entityType === 'contract') {
+        recMapByContract.set(r.entityId, { status: r.status, remark: r.remark })
+      } else if (r.entityType === 'term') {
+        recMapByTerm.set(r.entityId, { status: r.status, remark: r.remark })
+      }
+    })
+
+    const byClientWithRec = byClient.map((c) => {
+      const rec = recMapByClient.get(c.clientId)
+      return { ...c, reconciliationStatus: rec?.status, remark: rec?.remark }
+    })
+
+    const byContractWithRec = byContract.map((c) => {
+      const rec = recMapByContract.get(c.contractId)
+      return { ...c, reconciliationStatus: rec?.status, remark: rec?.remark }
+    })
+
+    const byTermWithRec = byTerm.map((t) => {
+      const rec = recMapByTerm.get(t.termId)
+      return { ...t, reconciliationStatus: rec?.status, remark: rec?.remark }
+    })
+
     res.json({
       success: true,
       data: {
         summary,
-        byClient,
-        byContract,
-        byTerm,
+        byClient: byClientWithRec,
+        byContract: byContractWithRec,
+        byTerm: byTermWithRec,
       },
     })
   } catch (error) {
@@ -461,6 +522,49 @@ router.get('/reconciliation', async (req: Request, res: Response): Promise<void>
       success: false,
       error: '获取对账数据失败',
     })
+  }
+})
+
+router.get('/reconciliation-records', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { month } = req.query
+    const monthStr = month as string
+    if (!monthStr) {
+      res.status(400).json({ success: false, error: '缺少 month 参数' })
+      return
+    }
+    const records = db.getReconciliationByMonth(monthStr)
+    res.json({ success: true, data: records })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '获取对账记录失败' })
+  }
+})
+
+router.put('/reconciliation-records', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { month, entityType, entityId, status, remark } = req.body
+    if (!month || !entityType || !entityId || !status) {
+      res.status(400).json({ success: false, error: '缺少必要参数' })
+      return
+    }
+    if (!['client', 'contract', 'term'].includes(entityType)) {
+      res.status(400).json({ success: false, error: 'entityType 无效' })
+      return
+    }
+    if (!['verified', 'pending', 'discrepancy'].includes(status)) {
+      res.status(400).json({ success: false, error: 'status 无效' })
+      return
+    }
+    const record = db.upsertReconciliation({
+      month,
+      entityType,
+      entityId,
+      status,
+      remark: remark || '',
+    })
+    res.json({ success: true, data: record })
+  } catch (error) {
+    res.status(500).json({ success: false, error: '保存对账记录失败' })
   }
 })
 
