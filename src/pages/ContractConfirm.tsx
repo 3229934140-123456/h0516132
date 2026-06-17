@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
+import { useStore } from '@/store/useStore'
 import { formatCurrency, formatDate } from '@/utils/format'
 import { cn } from '@/lib/utils'
 
@@ -29,13 +30,16 @@ interface ContractConfirmData {
   clientId: string
   contractNo: string
   name: string
-  title: string
+  title?: string
   amount: number
   status: string
   description: string
   startDate: string
   endDate: string
+  confirmToken?: string
+  confirmedAt?: string
   createdAt: string
+  signedDate?: string
   client?: {
     id: string
     name: string
@@ -48,8 +52,11 @@ interface ContractConfirmData {
 }
 
 export default function ContractConfirm() {
-  const { id } = useParams<{ id: string }>()
+  const { token } = useParams<{ token: string }>()
   const navigate = useNavigate()
+  const fetchContractByToken = useStore((s) => s.fetchContractByToken)
+  const confirmContract = useStore((s) => s.confirmContract)
+
   const [contract, setContract] = useState<ContractConfirmData | null>(null)
   const [loading, setLoading] = useState(true)
   const [agreed, setAgreed] = useState(false)
@@ -60,14 +67,18 @@ export default function ContractConfirm() {
 
   useEffect(() => {
     const fetchContract = async () => {
-      if (!id) return
+      if (!token) return
+      setLoading(true)
+      setError('')
       try {
-        const res = await fetch(`/api/contracts/${id}`)
-        if (!res.ok) throw new Error('获取合同信息失败')
-        const result = await res.json()
-        setContract(result.data)
-        if (result.data?.status === 'active' || result.data?.status === 'completed') {
-          setConfirmed(true)
+        const result = await fetchContractByToken(token)
+        if (result) {
+          setContract(result as unknown as ContractConfirmData)
+          if (result.status === 'active' || result.status === 'completed') {
+            setConfirmed(true)
+          }
+        } else {
+          setError('合同不存在或链接无效')
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : '加载失败')
@@ -76,23 +87,22 @@ export default function ContractConfirm() {
       }
     }
     fetchContract()
-  }, [id])
+  }, [token, fetchContractByToken])
 
   const handleConfirm = async () => {
-    if (!agreed || !contract) return
+    if (!agreed || !contract || !token) return
     setConfirming(true)
     setError('')
     try {
-      const res = await fetch(`/api/contracts/${contract.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'active' }),
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || '确认失败')
+      const success = await confirmContract(token)
+      if (success) {
+        setConfirmed(true)
+        if (contract.confirmedAt) {
+          setContract({ ...contract, status: 'active', confirmedAt: contract.confirmedAt })
+        }
+      } else {
+        throw new Error('确认失败')
       }
-      setConfirmed(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : '确认失败，请重试')
     } finally {
@@ -100,11 +110,7 @@ export default function ContractConfirm() {
     }
   }
 
-  const paymentTerms = contract?.paymentTerms || [
-    { id: '1', description: '定金', amount: Math.round((contract?.amount || 0) * 0.3), status: 'pending', dueDate: '' },
-    { id: '2', description: '验收款', amount: Math.round((contract?.amount || 0) * 0.5), status: 'pending', dueDate: '' },
-    { id: '3', description: '尾款', amount: (contract?.amount || 0) - Math.round((contract?.amount || 0) * 0.3) - Math.round((contract?.amount || 0) * 0.5), status: 'pending', dueDate: '' },
-  ]
+  const paymentTerms = contract?.paymentTerms || []
 
   if (loading) {
     return (
@@ -168,7 +174,7 @@ export default function ContractConfirm() {
               合同已确认
             </h2>
             <p className="mb-6 text-forest-600">
-              感谢您的确认，合同已于 {formatDate(new Date().toISOString())} 生效。
+              感谢您的确认，合同已于 {formatDate(contract.confirmedAt || new Date().toISOString())} 生效。
               我们将尽快开始为您提供服务。
             </p>
             <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -304,14 +310,16 @@ export default function ContractConfirm() {
                         <div>
                           <p className="font-medium">第三条 付款方式</p>
                           <div className="pl-4">
-                            {paymentTerms.map((term, i) => (
+                            {paymentTerms.length > 0 ? paymentTerms.map((term, i) => (
                               <p key={term.id}>
                                 {i + 1}. {term.description}：
                                 {formatCurrency(term.amount)}
                                 （{Math.round((term.amount / contract.amount) * 100)}%）
                                 {term.dueDate && `，于 ${formatDate(term.dueDate, 'date')} 前支付`}
                               </p>
-                            ))}
+                            )) : (
+                              <p>双方另行约定</p>
+                            )}
                           </div>
                         </div>
                         <div>
@@ -378,36 +386,42 @@ export default function ContractConfirm() {
             <div className="mb-6 rounded-2xl border border-forest-200 bg-white p-6 shadow-sm">
               <h3 className="mb-4 font-semibold text-forest-900">付款节点</h3>
               <div className="space-y-3">
-                {paymentTerms.map((term, index) => (
-                  <div
-                    key={term.id}
-                    className="flex items-center justify-between rounded-lg border border-forest-100 bg-forest-50/50 p-4"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-sm font-semibold text-forest-700 shadow-sm">
-                        {index + 1}
-                      </div>
-                      <div>
-                        <p className="font-medium text-forest-900">
-                          {term.description}
-                        </p>
-                        {term.dueDate && (
-                          <p className="text-xs text-forest-500">
-                            到期：{formatDate(term.dueDate, 'date')}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-semibold text-forest-900">
-                        {formatCurrency(term.amount)}
-                      </p>
-                      <p className="text-xs text-forest-500">
-                        {Math.round((term.amount / contract.amount) * 100)}%
-                      </p>
-                    </div>
+                {paymentTerms.length === 0 ? (
+                  <div className="py-4 text-center text-sm text-forest-500">
+                    暂无付款节点
                   </div>
-                ))}
+                ) : (
+                  paymentTerms.map((term, index) => (
+                    <div
+                      key={term.id}
+                      className="flex items-center justify-between rounded-lg border border-forest-100 bg-forest-50/50 p-4"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-sm font-semibold text-forest-700 shadow-sm">
+                          {index + 1}
+                        </div>
+                        <div>
+                          <p className="font-medium text-forest-900">
+                            {term.description}
+                          </p>
+                          {term.dueDate && (
+                            <p className="text-xs text-forest-500">
+                              到期：{formatDate(term.dueDate, 'date')}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-semibold text-forest-900">
+                          {formatCurrency(term.amount)}
+                        </p>
+                        <p className="text-xs text-forest-500">
+                          {Math.round((term.amount / contract.amount) * 100)}%
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 

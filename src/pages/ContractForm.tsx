@@ -35,7 +35,7 @@ export default function ContractForm() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
   const isEdit = !!id
-  const { clients, contracts } = useStore()
+  const { clients, contracts, createContract, fetchPaymentTerms } = useStore()
 
   const [clientId, setClientId] = useState('')
   const [title, setTitle] = useState('')
@@ -75,20 +75,47 @@ export default function ContractForm() {
   )
 
   useEffect(() => {
-    if (isEdit) {
-      const contract = contracts.find((c) => c.id === id)
-      if (contract) {
-        setClientId(contract.clientId)
-        setTitle(contract.name)
-        setTotalAmount(contract.amount)
-        setStartDate(contract.startDate)
-        setEndDate(contract.endDate)
+    const loadContractDetail = async () => {
+      if (isEdit && id) {
+        try {
+          const res = await fetch(`/api/contracts/${id}`)
+          if (res.ok) {
+            const result = await res.json()
+            if (result.success && result.data) {
+              const data = result.data
+              setClientId(data.clientId)
+              setTitle(data.name)
+              setTotalAmount(data.amount)
+              setStartDate(data.startDate)
+              setEndDate(data.endDate)
+              setServiceContent(data.description || '')
+              if (data.paymentTerms && data.paymentTerms.length > 0) {
+                setPaymentTerms(
+                  data.paymentTerms.map((t: PaymentTermForm) => ({
+                    id: crypto.randomUUID(),
+                    description: t.description,
+                    percentage:
+                      data.amount > 0
+                        ? Math.round((t.amount / data.amount) * 100)
+                        : 0,
+                    amount: t.amount,
+                    dueDate: t.dueDate,
+                  })),
+                )
+                return
+              }
+            }
+          }
+        } catch (e) {
+          console.error('加载合同详情失败', e)
+        }
+        setPaymentTerms(defaultTerms)
+      } else {
         setPaymentTerms(defaultTerms)
       }
-    } else {
-      setPaymentTerms(defaultTerms)
     }
-  }, [isEdit, id, contracts, defaultTerms])
+    loadContractDetail()
+  }, [isEdit, id, defaultTerms])
 
   useEffect(() => {
     setPaymentTerms((prev) =>
@@ -161,6 +188,13 @@ export default function ContractForm() {
       return
     }
 
+    const paymentTermsData = paymentTerms.map((term, index) => ({
+      termNo: index + 1,
+      description: term.description,
+      amount: term.amount,
+      dueDate: term.dueDate,
+    }))
+
     const contractData = {
       clientId,
       contractNo: `HT-${Date.now()}`,
@@ -173,22 +207,28 @@ export default function ContractForm() {
       startDate,
       endDate,
       signedDate: startDate,
+      paymentTerms: paymentTermsData,
     }
 
     try {
-      const url = isEdit ? `/api/contracts/${id}` : '/api/contracts'
-      const method = isEdit ? 'PUT' : 'POST'
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(contractData),
-      })
-
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || '保存失败')
+      if (isEdit) {
+        const url = `/api/contracts/${id}`
+        const res = await fetch(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(contractData),
+        })
+        if (!res.ok) {
+          const data = await res.json()
+          throw new Error(data.error || '保存失败')
+        }
+      } else {
+        const result = await createContract(contractData)
+        if (!result) {
+          throw new Error('创建合同失败')
+        }
       }
-
+      await fetchPaymentTerms()
       navigate('/contracts')
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存失败')

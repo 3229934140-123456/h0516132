@@ -83,30 +83,25 @@ export function PaymentModal({ open, onClose, paymentTerm }: PaymentModalProps) 
     >
       <ModalBody className="space-y-4">
         {paymentTerm && (
-          <div className="rounded-lg bg-forest-50 p-4">
+          <div className="rounded-lg bg-forest-50 p-4 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-forest-600">应收金额</span>
+              <span className="text-sm text-forest-600">应收</span>
               <span className="text-lg font-semibold text-forest-900">
                 {formatCurrency(paymentTerm.amount)}
               </span>
             </div>
-            {paymentTerm.paidAmount > 0 && (
-              <div className="mt-2 flex items-center justify-between">
-                <span className="text-sm text-forest-600">已收金额</span>
-                <span className="text-sm font-medium text-forest-700">
-                  {formatCurrency(paymentTerm.paidAmount)}
-                </span>
-              </div>
-            )}
-            {(paymentTerm.amount - (paymentTerm.paidAmount || 0)) > 0 &&
-              (paymentTerm.paidAmount || 0) > 0 && (
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="text-sm text-forest-600">待收金额</span>
-                  <span className="text-sm font-semibold text-amber-600">
-                    {formatCurrency(paymentTerm.amount - paymentTerm.paidAmount)}
-                  </span>
-                </div>
-              )}
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-forest-600">已收</span>
+              <span className="text-sm font-medium text-forest-700">
+                {formatCurrency(paymentTerm.paidAmount || 0)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between border-t border-forest-200 pt-2">
+              <span className="text-sm text-forest-600">本次收</span>
+              <span className="text-lg font-semibold text-amber-600">
+                {formatCurrency(Number(amount) || 0)}
+              </span>
+            </div>
           </div>
         )}
 

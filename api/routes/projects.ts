@@ -191,7 +191,7 @@ router.post('/:id/files', async (req: Request, res: Response): Promise<void> => 
       })
       return
     }
-    const data = req.body as Omit<ProjectFile, 'id' | 'projectId'>
+    const data = req.body as Omit<ProjectFile, 'id' | 'projectId' | 'uploadedAt'>
     if (!data.name || !data.fileName) {
       res.status(400).json({
         success: false,
@@ -201,6 +201,7 @@ router.post('/:id/files', async (req: Request, res: Response): Promise<void> => 
     }
     const file = db.createProjectFile({
       ...data,
+      type: data.type || 'other',
       projectId: id,
     })
     res.status(201).json({

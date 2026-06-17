@@ -50,6 +50,8 @@ interface ContractDetailData {
   description: string
   startDate: string
   endDate: string
+  confirmToken: string
+  confirmedAt?: string
   createdAt: string
   client?: {
     id: string
@@ -108,7 +110,7 @@ export default function ContractDetail() {
 
   const generateConfirmLink = () => {
     const baseUrl = window.location.origin
-    return `${baseUrl}/contract-confirm/${id}`
+    return `${baseUrl}/contracts/confirm/${contract?.confirmToken}`
   }
 
   const copyConfirmLink = async () => {
@@ -160,11 +162,7 @@ export default function ContractDetail() {
   const remainingAmount = contract.remainingAmount || contract.amount - totalPaid
   const paidPercentage = contract.amount > 0 ? Math.round((totalPaid / contract.amount) * 100) : 0
 
-  const paymentTerms = contract.paymentTerms || [
-    { id: '1', description: '定金', amount: Math.round(contract.amount * 0.3), status: 'pending' as const, dueDate: '', paidAmount: 0 },
-    { id: '2', description: '验收款', amount: Math.round(contract.amount * 0.5), status: 'pending' as const, dueDate: '', paidAmount: 0 },
-    { id: '3', description: '尾款', amount: contract.amount - Math.round(contract.amount * 0.3) - Math.round(contract.amount * 0.5), status: 'pending' as const, dueDate: '', paidAmount: 0 },
-  ]
+  const paymentTerms = contract.paymentTerms || []
 
   return (
     <Layout title="合同详情">
@@ -183,7 +181,13 @@ export default function ContractDetail() {
               <Edit className="h-4 w-4" />
               编辑
             </Button>
-            <Button onClick={copyConfirmLink}>
+            {contract.status === 'draft' && (
+              <Button onClick={copyConfirmLink}>
+                <ExternalLink className="h-4 w-4" />
+                发送确认
+              </Button>
+            )}
+            <Button variant="outline" onClick={copyConfirmLink}>
               {copied ? (
                 <>
                   <Check className="h-4 w-4" />
@@ -192,7 +196,7 @@ export default function ContractDetail() {
               ) : (
                 <>
                   <Copy className="h-4 w-4" />
-                  复制确认链接
+                  复制链接
                 </>
               )}
             </Button>

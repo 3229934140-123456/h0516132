@@ -30,12 +30,13 @@ import {
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { clients, projects, contracts, paymentTerms } = useStore();
+  const { clients, projects, contracts, paymentTerms, paymentRecords, updateClient } = useStore();
 
   const client = clients.find((c) => c.id === id);
   const clientProjects = projects.filter((p) => p.clientId === id);
   const clientContracts = contracts.filter((c) => c.clientId === id);
-  const clientPayments = paymentTerms.filter((p) => p.clientName === client?.name);
+  const clientContractIds = clientContracts.map((c) => c.id);
+  const clientPayments = paymentRecords.filter((p) => clientContractIds.includes(p.contractId));
 
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -44,11 +45,12 @@ export default function ClientDetail() {
     phone: client?.phone || '',
     email: client?.email || '',
     address: client?.address || '',
+    companyType: client?.companyType || '',
   });
 
   const stats = useMemo(() => {
     const totalContractAmount = clientContracts.reduce((sum, c) => sum + c.amount, 0);
-    const totalPaid = clientPayments.filter((p) => p.status === 'paid').reduce((sum, p) => sum + p.paidAmount, 0);
+    const totalPaid = clientPayments.reduce((sum, p) => sum + p.amount, 0);
     const activeProjects = clientProjects.filter((p) => p.status === 'in_progress').length;
     const completedProjects = clientProjects.filter((p) => p.status === 'completed').length;
 
@@ -77,13 +79,17 @@ export default function ClientDetail() {
       phone: client.phone,
       email: client.email,
       address: client.address,
+      companyType: client.companyType,
     });
     setIsEditing(true);
   };
 
-  const handleSave = () => {
-    setIsEditing(false);
-    alert('客户信息已保存');
+  const handleSave = async () => {
+    if (!id) return;
+    const success = await updateClient(id, editForm);
+    if (success) {
+      setIsEditing(false);
+    }
   };
 
   const handleCancel = () => {
@@ -231,6 +237,16 @@ export default function ClientDetail() {
                     className="w-full rounded-lg border border-forest-200 px-3 py-2 text-sm focus:border-forest-500 focus:outline-none focus:ring-2 focus:ring-forest-200"
                   />
                 </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-forest-600">公司类型</label>
+                  <input
+                    type="text"
+                    value={editForm.companyType}
+                    onChange={(e) => setEditForm({ ...editForm, companyType: e.target.value })}
+                    placeholder="请输入公司类型"
+                    className="w-full rounded-lg border border-forest-200 px-3 py-2 text-sm focus:border-forest-500 focus:outline-none focus:ring-2 focus:ring-forest-200"
+                  />
+                </div>
               </div>
             ) : (
               <div className="space-y-4 text-sm">
@@ -267,6 +283,13 @@ export default function ClientDetail() {
                   <div>
                     <p className="text-xs text-forest-500">地址</p>
                     <p className="text-forest-800">{client.address || '暂无地址信息'}</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <Building2 className="mt-0.5 h-4 w-4 text-forest-400" />
+                  <div>
+                    <p className="text-xs text-forest-500">公司类型</p>
+                    <p className="text-forest-800">{client.companyType || '-'}</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">

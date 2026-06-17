@@ -23,6 +23,8 @@ export interface Contract {
   endDate: string
   status: 'draft' | 'active' | 'completed' | 'terminated'
   description: string
+  confirmToken: string
+  confirmedAt?: string
   createdAt: string
   updatedAt: string
 }
@@ -89,6 +91,18 @@ export interface PaymentRecordWithDetails {
   clientName?: string
 }
 
+export interface ProjectFile {
+  id: string
+  projectId: string
+  name: string
+  fileName: string
+  fileSize: number
+  fileType: string
+  type: 'requirement' | 'deliverable' | 'other'
+  uploadedBy: string
+  uploadedAt: string
+}
+
 export interface Statistics {
   totalClients: number
   activeContracts: number
@@ -119,6 +133,31 @@ interface UIState {
   setSidebarCollapsed: (collapsed: boolean) => void
 }
 
+interface ContractWithDetails extends Contract {
+  client?: Client
+  paymentTerms?: PaymentTermWithDetails[]
+}
+
+interface CreateContractData {
+  clientId: string
+  contractNo: string
+  name: string
+  amount: number
+  signedDate: string
+  startDate: string
+  endDate: string
+  status?: 'draft' | 'active' | 'completed' | 'terminated'
+  description: string
+  paymentTerms?: Array<{
+    termNo?: number
+    description: string
+    amount: number
+    dueDate: string
+    status?: 'pending' | 'invoiced' | 'paid' | 'overdue'
+    paidAmount?: number
+  }>
+}
+
 interface DataState {
   clients: Client[]
   contracts: Contract[]
@@ -126,6 +165,7 @@ interface DataState {
   payments: Payment[]
   paymentTerms: PaymentTermWithDetails[]
   paymentRecords: PaymentRecordWithDetails[]
+  projectFiles: Record<string, ProjectFile[]>
   statistics: Statistics
   loading: boolean
   error: string | null
@@ -136,9 +176,16 @@ interface DataState {
   fetchPayments: () => Promise<void>
   fetchPaymentTerms: () => Promise<void>
   fetchPaymentRecords: () => Promise<void>
+  fetchProjectFiles: (projectId: string) => Promise<void>
+  uploadProjectFile: (projectId: string, fileData: Omit<ProjectFile, 'id' | 'projectId' | 'uploadedAt'>) => Promise<boolean>
+  deleteProjectFile: (projectId: string, fileId: string) => Promise<boolean>
   fetchStatistics: () => Promise<void>
   fetchAll: () => Promise<void>
+  fetchContractByToken: (token: string) => Promise<ContractWithDetails | null>
+  confirmContract: (token: string) => Promise<boolean>
+  createContract: (data: CreateContractData) => Promise<Contract | null>
   createPaymentRecord: (data: Omit<PaymentRecordWithDetails, 'id' | 'createdAt' | 'contractNo' | 'contractName' | 'clientName'>) => Promise<boolean>
+  updateClient: (id: string, data: Partial<Client>) => Promise<boolean>
 }
 
 export const useStore = create<DataState & UIState>((set, get) => ({
@@ -148,6 +195,7 @@ export const useStore = create<DataState & UIState>((set, get) => ({
   payments: [],
   paymentTerms: [],
   paymentRecords: [],
+  projectFiles: {},
   statistics: initialStatistics,
   loading: false,
   error: null,
@@ -240,6 +288,55 @@ export const useStore = create<DataState & UIState>((set, get) => ({
     }
   },
 
+  fetchProjectFiles: async (projectId) => {
+    set({ loading: true, error: null })
+    try {
+      const res = await fetch(`/api/projects/${projectId}/files`)
+      if (!res.ok) throw new Error('获取项目文件失败')
+      const result = await res.json()
+      set((state) => ({
+        projectFiles: {
+          ...state.projectFiles,
+          [projectId]: result.success && result.data ? result.data : [],
+        },
+      }))
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+    } finally {
+      set({ loading: false })
+    }
+  },
+
+  uploadProjectFile: async (projectId, fileData) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fileData),
+      })
+      if (!res.ok) throw new Error('上传文件失败')
+      await get().fetchProjectFiles(projectId)
+      return true
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return false
+    }
+  },
+
+  deleteProjectFile: async (projectId, fileId) => {
+    try {
+      const res = await fetch(`/api/projects/files/${fileId}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) throw new Error('删除文件失败')
+      await get().fetchProjectFiles(projectId)
+      return true
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return false
+    }
+  },
+
   fetchStatistics: async () => {
     set({ loading: true, error: null })
     try {
@@ -263,6 +360,66 @@ export const useStore = create<DataState & UIState>((set, get) => ({
       })
       if (!res.ok) throw new Error('创建收款记录失败')
       await Promise.all([get().fetchPaymentRecords(), get().fetchPaymentTerms(), get().fetchStatistics()])
+      return true
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return false
+    }
+  },
+
+  fetchContractByToken: async (token) => {
+    try {
+      const res = await fetch(`/api/contracts/confirm/${token}`)
+      if (!res.ok) throw new Error('获取合同信息失败')
+      const result = await res.json()
+      return result.success && result.data ? result.data : null
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return null
+    }
+  },
+
+  confirmContract: async (token) => {
+    try {
+      const res = await fetch(`/api/contracts/confirm/${token}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (!res.ok) throw new Error('确认合同失败')
+      await Promise.all([get().fetchContracts(), get().fetchPaymentTerms()])
+      return true
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return false
+    }
+  },
+
+  createContract: async (data) => {
+    try {
+      const res = await fetch('/api/contracts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('创建合同失败')
+      const result = await res.json()
+      await Promise.all([get().fetchContracts(), get().fetchPaymentTerms()])
+      return result.success && result.data ? result.data : null
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : '未知错误' })
+      return null
+    }
+  },
+
+  updateClient: async (id, data) => {
+    try {
+      const res = await fetch(`/api/clients/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('更新客户失败')
+      await get().fetchClients()
       return true
     } catch (err) {
       set({ error: err instanceof Error ? err.message : '未知错误' })

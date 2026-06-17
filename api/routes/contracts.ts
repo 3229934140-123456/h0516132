@@ -60,6 +60,75 @@ router.get('/payment-terms/all', async (req: Request, res: Response): Promise<vo
   }
 })
 
+router.get('/confirm/:token', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { token } = req.params
+    const contract = db.getContractByToken(token)
+    if (!contract) {
+      res.status(404).json({
+        success: false,
+        error: '合同不存在或链接无效',
+      })
+      return
+    }
+    const client = db.getClientById(contract.clientId)
+    const paymentTerms = db.getPaymentTermsByContractId(contract.id)
+    res.json({
+      success: true,
+      data: {
+        ...contract,
+        client,
+        paymentTerms,
+      },
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: '获取合同信息失败',
+    })
+  }
+})
+
+router.post('/confirm/:token', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { token } = req.params
+    const contract = db.getContractByToken(token)
+    if (!contract) {
+      res.status(404).json({
+        success: false,
+        error: '合同不存在或链接无效',
+      })
+      return
+    }
+    if (contract.status === 'active' || contract.status === 'completed') {
+      res.json({
+        success: true,
+        data: contract,
+        message: '合同已确认',
+      })
+      return
+    }
+    const updated = db.confirmContract(token)
+    if (!updated) {
+      res.status(400).json({
+        success: false,
+        error: '确认合同失败',
+      })
+      return
+    }
+    res.json({
+      success: true,
+      data: updated,
+      message: '合同确认成功',
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: '确认合同失败',
+    })
+  }
+})
+
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params
@@ -98,15 +167,17 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 
 router.post('/', async (req: Request, res: Response): Promise<void> => {
   try {
-    const data = req.body as Omit<Contract, 'id' | 'createdAt' | 'updatedAt'>
-    if (!data.clientId || !data.contractNo || !data.name || !data.amount) {
+    const { paymentTerms, ...contractData } = req.body as Omit<Contract, 'id' | 'createdAt' | 'updatedAt' | 'confirmToken'> & {
+      paymentTerms?: Array<Omit<PaymentTerm, 'id' | 'contractId' | 'createdAt' | 'updatedAt'>>
+    }
+    if (!contractData.clientId || !contractData.contractNo || !contractData.name || !contractData.amount) {
       res.status(400).json({
         success: false,
         error: '缺少必填字段：客户ID、合同编号、名称、金额',
       })
       return
     }
-    const client = db.getClientById(data.clientId)
+    const client = db.getClientById(contractData.clientId)
     if (!client) {
       res.status(400).json({
         success: false,
@@ -114,10 +185,28 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       })
       return
     }
-    const contract = db.createContract(data)
+    const contract = db.createContract(contractData)
+
+    if (paymentTerms && Array.isArray(paymentTerms)) {
+      paymentTerms.forEach((term, index) => {
+        db.createPaymentTerm({
+          ...term,
+          contractId: contract.id,
+          termNo: term.termNo || index + 1,
+          status: term.status || 'pending',
+          paidAmount: term.paidAmount || 0,
+        })
+      })
+    }
+
+    const terms = db.getPaymentTermsByContractId(contract.id)
+
     res.status(201).json({
       success: true,
-      data: contract,
+      data: {
+        ...contract,
+        paymentTerms: terms,
+      },
       message: '合同创建成功',
     })
   } catch (error) {
@@ -131,8 +220,19 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 router.put('/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params
-    const data = req.body as Partial<Contract>
-    const updated = db.updateContract(id, data)
+    const { paymentTerms, ...contractData } = req.body as Partial<Contract> & {
+      paymentTerms?: Array<Omit<PaymentTerm, 'id' | 'contractId' | 'createdAt' | 'updatedAt'>>
+    }
+    const existing = db.getContractById(id)
+    if (!existing) {
+      res.status(404).json({
+        success: false,
+        error: '合同不存在',
+      })
+      return
+    }
+
+    const updated = db.updateContract(id, contractData)
     if (!updated) {
       res.status(404).json({
         success: false,
@@ -140,9 +240,28 @@ router.put('/:id', async (req: Request, res: Response): Promise<void> => {
       })
       return
     }
+
+    if (paymentTerms && Array.isArray(paymentTerms)) {
+      db.deletePaymentTermsByContractId(id)
+      paymentTerms.forEach((term, index) => {
+        db.createPaymentTerm({
+          ...term,
+          contractId: id,
+          termNo: term.termNo || index + 1,
+          status: term.status || 'pending',
+          paidAmount: term.paidAmount || 0,
+        })
+      })
+    }
+
+    const terms = db.getPaymentTermsByContractId(id)
+
     res.json({
       success: true,
-      data: updated,
+      data: {
+        ...updated,
+        paymentTerms: terms,
+      },
       message: '合同更新成功',
     })
   } catch (error) {

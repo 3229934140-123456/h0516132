@@ -346,27 +346,23 @@ export default function PaymentTracker() {
                             </div>
                           </div>
                           <div className="flex flex-col items-end gap-3 md:flex-row md:items-center">
-                            <div className="text-right">
-                              <p className="text-xs text-forest-500">
-                                应收金额
-                              </p>
+                            <div className="text-right space-y-1">
+                              <div className="text-xs text-forest-500 flex justify-end gap-3">
+                                <span>应收 {formatCurrency(term.amount)}</span>
+                                <span>已收 {formatCurrency(term.paidAmount || 0)}</span>
+                              </div>
                               <p
                                 className={cn(
                                   "text-xl font-bold tabular-nums",
-                                  term.isOverdue
-                                    ? "text-red-600"
-                                    : "text-forest-900",
+                                  remaining > 0
+                                    ? term.isOverdue
+                                      ? "text-red-600"
+                                      : "text-amber-600"
+                                    : "text-forest-600",
                                 )}
                               >
-                                {formatCurrency(remaining)}
+                                剩余 {formatCurrency(remaining)}
                               </p>
-                              {term.paidAmount > 0 && (
-                                <p className="text-xs text-forest-500">
-                                  已收{" "}
-                                  {formatCurrency(term.paidAmount)} /{" "}
-                                  {formatCurrency(term.amount)}
-                                </p>
-                              )}
                             </div>
                             <div className="flex gap-2">
                               <Button

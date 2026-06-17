@@ -84,26 +84,32 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return
     }
     const record = db.createPaymentRecord(data)
+    let updatedTerm = undefined
     if (data.paymentTermId) {
       const term = db.getPaymentTermById(data.paymentTermId)
       if (term) {
         const newPaidAmount = term.paidAmount + data.amount
         let newStatus = term.status
+        let newPaidDate = term.paidDate
         if (newPaidAmount >= term.amount) {
           newStatus = 'paid'
+          newPaidDate = data.paymentDate
         } else if (newPaidAmount > 0) {
-          newStatus = 'paid'
+          newStatus = term.status
         }
-        db.updatePaymentTerm(data.paymentTermId, {
+        updatedTerm = db.updatePaymentTerm(data.paymentTermId, {
           paidAmount: newPaidAmount,
-          paidDate: data.paymentDate,
+          paidDate: newPaidDate,
           status: newStatus,
         })
       }
     }
     res.status(201).json({
       success: true,
-      data: record,
+      data: {
+        record,
+        paymentTerm: updatedTerm,
+      },
       message: '付款记录创建成功',
     })
   } catch (error) {

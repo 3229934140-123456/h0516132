@@ -11,6 +11,10 @@ const generateId = (): string => {
   return Math.random().toString(36).substring(2, 10) + Date.now().toString(36)
 }
 
+const generateToken = (): string => {
+  return 'confirm-' + Math.random().toString(36).substring(2, 10) + Date.now().toString(36)
+}
+
 const now = (): string => new Date().toISOString()
 
 class Database {
@@ -74,6 +78,8 @@ class Database {
         endDate: '2025-08-31',
         status: 'active',
         description: '为北京华盛科技定制开发企业级OA管理系统',
+        confirmToken: 'confirm-k1',
+        confirmedAt: '2025-01-21T10:00:00.000Z',
         createdAt: '2025-01-20T10:00:00.000Z',
         updatedAt: '2025-01-20T10:00:00.000Z',
       },
@@ -88,6 +94,8 @@ class Database {
         endDate: '2025-09-30',
         status: 'active',
         description: '搭建商业智能数据可视化分析平台',
+        confirmToken: 'confirm-k2',
+        confirmedAt: '2025-03-16T11:00:00.000Z',
         createdAt: '2025-03-15T11:00:00.000Z',
         updatedAt: '2025-03-15T11:00:00.000Z',
       },
@@ -102,6 +110,8 @@ class Database {
         endDate: '2025-10-31',
         status: 'active',
         description: '上海远见贸易电商平台全面升级改造项目',
+        confirmToken: 'confirm-k3',
+        confirmedAt: '2025-02-26T14:00:00.000Z',
         createdAt: '2025-02-25T14:00:00.000Z',
         updatedAt: '2025-02-25T14:00:00.000Z',
       },
@@ -116,6 +126,8 @@ class Database {
         endDate: '2025-12-31',
         status: 'active',
         description: '深圳智造集团MES生产制造执行系统',
+        confirmToken: 'confirm-k4',
+        confirmedAt: '2025-03-21T09:00:00.000Z',
         createdAt: '2025-03-20T09:00:00.000Z',
         updatedAt: '2025-03-20T09:00:00.000Z',
       },
@@ -130,6 +142,8 @@ class Database {
         endDate: '2024-12-31',
         status: 'completed',
         description: '企业官方网站设计与开发改版',
+        confirmToken: 'confirm-k5',
+        confirmedAt: '2024-11-11T10:00:00.000Z',
         createdAt: '2024-11-10T10:00:00.000Z',
         updatedAt: '2024-12-31T18:00:00.000Z',
       },
@@ -277,6 +291,7 @@ class Database {
         fileName: 'OA需求规格说明书V1.2.pdf',
         fileSize: 2456000,
         fileType: 'application/pdf',
+        type: 'requirement',
         uploadedBy: '陈明',
         uploadedAt: '2025-03-15T10:30:00.000Z',
       },
@@ -287,6 +302,7 @@ class Database {
         fileName: 'OA系统架构设计.docx',
         fileSize: 1820000,
         fileType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        type: 'requirement',
         uploadedBy: '陈明',
         uploadedAt: '2025-03-25T14:20:00.000Z',
       },
@@ -297,6 +313,7 @@ class Database {
         fileName: '电商平台UI设计稿.fig',
         fileSize: 8520000,
         fileType: 'application/figma',
+        type: 'deliverable',
         uploadedBy: '赵雪',
         uploadedAt: '2025-04-20T11:00:00.000Z',
       },
@@ -307,6 +324,7 @@ class Database {
         fileName: 'MES业务流程梳理.xlsx',
         fileSize: 960000,
         fileType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        type: 'requirement',
         uploadedBy: '孙磊',
         uploadedAt: '2025-05-05T16:45:00.000Z',
       },
@@ -422,15 +440,33 @@ class Database {
     return Array.from(this.contracts.values()).filter((c) => c.clientId === clientId)
   }
 
-  createContract(data: Omit<Contract, 'id' | 'createdAt' | 'updatedAt'>): Contract {
+  createContract(data: Omit<Contract, 'id' | 'createdAt' | 'updatedAt' | 'confirmToken'>): Contract {
     const contract: Contract = {
       ...data,
       id: generateId(),
+      confirmToken: generateToken(),
       createdAt: now(),
       updatedAt: now(),
     }
     this.contracts.set(contract.id, contract)
     return contract
+  }
+
+  getContractByToken(token: string): Contract | undefined {
+    return Array.from(this.contracts.values()).find((c) => c.confirmToken === token)
+  }
+
+  confirmContract(token: string): Contract | undefined {
+    const contract = this.getContractByToken(token)
+    if (!contract) return undefined
+    const updated: Contract = {
+      ...contract,
+      status: 'active',
+      confirmedAt: now(),
+      updatedAt: now(),
+    }
+    this.contracts.set(contract.id, updated)
+    return updated
   }
 
   updateContract(id: string, data: Partial<Contract>): Contract | undefined {
@@ -481,6 +517,11 @@ class Database {
 
   deletePaymentTerm(id: string): boolean {
     return this.paymentTerms.delete(id)
+  }
+
+  deletePaymentTermsByContractId(contractId: string): void {
+    const terms = this.getPaymentTermsByContractId(contractId)
+    terms.forEach((t) => this.paymentTerms.delete(t.id))
   }
 
   // ============ Projects ============
@@ -536,10 +577,11 @@ class Database {
     return Array.from(this.projectFiles.values()).filter((f) => f.projectId === projectId)
   }
 
-  createProjectFile(data: Omit<ProjectFile, 'id'>): ProjectFile {
+  createProjectFile(data: Omit<ProjectFile, 'id' | 'uploadedAt'>): ProjectFile {
     const file: ProjectFile = {
       ...data,
       id: generateId(),
+      uploadedAt: now(),
     }
     this.projectFiles.set(file.id, file)
     return file

@@ -148,7 +148,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
 };
 
 export default function Statistics() {
-  const { clients, contracts, projects, paymentTerms, fetchAll } = useStore();
+  const { clients, contracts, projects, paymentTerms, paymentRecords, fetchAll } = useStore();
 
   useEffect(() => {
     void fetchAll();
@@ -156,11 +156,9 @@ export default function Statistics() {
 
   const summary = useMemo(() => {
     const totalContractAmount = contracts.reduce((sum, c) => sum + c.amount, 0);
-    const totalPaid = paymentTerms
-      .filter((p) => p.status === 'paid')
-      .reduce((sum, p) => sum + p.paidAmount, 0);
+    const totalPaid = paymentRecords.reduce((sum, r) => sum + r.amount, 0);
     const totalPending = paymentTerms
-      .filter((p) => p.status === 'pending' || p.status === 'invoiced')
+      .filter((p) => p.status !== 'paid')
       .reduce((sum, p) => sum + (p.amount - p.paidAmount), 0);
 
     return {
@@ -169,7 +167,7 @@ export default function Statistics() {
       totalPending,
       clientCount: clients.length,
     };
-  }, [contracts, paymentTerms, clients]);
+  }, [contracts, paymentRecords, paymentTerms, clients]);
 
   const monthlyData = useMemo((): MonthlyData[] => {
     const now = new Date();
@@ -181,36 +179,38 @@ export default function Statistics() {
       const month = date.getMonth();
       const monthLabel = `${year}年${month + 1}月`;
 
-      const monthPaid = paymentTerms
-        .filter((p) => {
-          if (p.status !== 'paid' || !p.paidDate) return false;
-          const d = new Date(p.paidDate);
+      const monthPaid = paymentRecords
+        .filter((r) => {
+          const d = new Date(r.paymentDate);
           return d.getFullYear() === year && d.getMonth() === month;
         })
-        .reduce((sum, p) => sum + p.paidAmount, 0);
+        .reduce((sum, r) => sum + r.amount, 0);
 
       months.push({ month: monthLabel, revenue: monthPaid });
     }
 
     return months;
-  }, [paymentTerms]);
+  }, [paymentRecords]);
 
   const clientRanking = useMemo((): ClientRankItem[] => {
     const maxAmount = Math.max(
       ...clients.map((c) => {
         const clientContracts = contracts.filter((ct) => ct.clientId === c.id);
-        return clientContracts.reduce((sum, ct) => sum + ct.amount, 0);
+        const clientContractIds = clientContracts.map((ct) => ct.id);
+        return paymentRecords
+          .filter((r) => clientContractIds.includes(r.contractId))
+          .reduce((sum, r) => sum + r.amount, 0);
       }),
       1
     );
 
     const ranking = clients.map((client, index) => {
       const clientContracts = contracts.filter((ct) => ct.clientId === client.id);
-      const totalAmount = clientContracts.reduce((sum, ct) => sum + ct.amount, 0);
-      const contractPayments = paymentTerms.filter(
-        (p) => p.clientName === client.name && p.status === 'paid'
-      );
-      const paidAmount = contractPayments.reduce((sum, p) => sum + p.paidAmount, 0);
+      const clientContractIds = clientContracts.map((ct) => ct.id);
+      const totalAmount = paymentRecords
+        .filter((r) => clientContractIds.includes(r.contractId))
+        .reduce((sum, r) => sum + r.amount, 0);
+      const paidAmount = totalAmount;
 
       return {
         rank: index + 1,
@@ -228,7 +228,7 @@ export default function Statistics() {
     });
 
     return ranking.slice(0, 5);
-  }, [clients, contracts, paymentTerms]);
+  }, [clients, contracts, paymentRecords]);
 
   const projectStatusData = useMemo((): ProjectStatusData[] => {
     const statusCounts = projects.reduce(
@@ -295,7 +295,7 @@ export default function Statistics() {
           value={formatCurrency(summary.totalPending)}
           icon={<TrendingUp className="w-5 h-5 text-amber-700" />}
           color="bg-amber-100"
-          subValue={`${paymentTerms.filter(p => p.status === 'pending' || p.status === 'invoiced').length} 笔待收`}
+          subValue={`${paymentTerms.filter(p => p.status !== 'paid').length} 笔待收`}
         />
         <SummaryCard
           title="合作客户"

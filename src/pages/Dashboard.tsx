@@ -147,7 +147,7 @@ function NotificationItem({ icon, iconBg, iconColor, title, description, meta, b
 }
 
 export default function Dashboard() {
-  const { clients, contracts, projects, paymentTerms, fetchAll } = useStore();
+  const { clients, contracts, projects, paymentTerms, paymentRecords, fetchAll } = useStore();
 
   useEffect(() => {
     void fetchAll();
@@ -158,32 +158,33 @@ export default function Dashboard() {
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
 
-    const yearPaid = paymentTerms
-      .filter((p) => {
-        if (p.status !== 'paid' || !p.paidDate) return false;
-        const d = new Date(p.paidDate);
+    const yearPaid = paymentRecords
+      .filter((r) => {
+        const d = new Date(r.paymentDate);
         return d.getFullYear() === currentYear;
       })
-      .reduce((sum, p) => sum + p.paidAmount, 0);
+      .reduce((sum, r) => sum + r.amount, 0);
 
     const pending = paymentTerms
-      .filter((p) => p.status === 'pending' || p.status === 'invoiced')
+      .filter((p) => p.status !== 'paid')
       .reduce((sum, p) => sum + (p.amount - p.paidAmount), 0);
 
     const overdue = paymentTerms
-      .filter((p) => p.status === 'overdue')
+      .filter((p) => {
+        const due = new Date(p.dueDate);
+        return p.status !== 'paid' && due < now;
+      })
       .reduce((sum, p) => sum + (p.amount - p.paidAmount), 0);
 
-    const monthPaid = paymentTerms
-      .filter((p) => {
-        if (p.status !== 'paid' || !p.paidDate) return false;
-        const d = new Date(p.paidDate);
+    const monthPaid = paymentRecords
+      .filter((r) => {
+        const d = new Date(r.paymentDate);
         return d.getFullYear() === currentYear && d.getMonth() === currentMonth;
       })
-      .reduce((sum, p) => sum + p.paidAmount, 0);
+      .reduce((sum, r) => sum + r.amount, 0);
 
     return { yearPaid, pending, overdue, monthPaid };
-  }, [paymentTerms]);
+  }, [paymentRecords, paymentTerms]);
 
   const inProgressProjects = useMemo(() => {
     return projects
@@ -201,7 +202,7 @@ export default function Dashboard() {
     const now = new Date();
 
     const duePayments: NotificationItemProps[] = paymentTerms
-      .filter((p) => p.status === 'pending' || p.status === 'invoiced')
+      .filter((p) => p.status !== 'paid')
       .sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())
       .slice(0, 2)
       .map((p) => ({
@@ -216,7 +217,10 @@ export default function Dashboard() {
       }));
 
     const overduePayments: NotificationItemProps[] = paymentTerms
-      .filter((p) => p.status === 'overdue')
+      .filter((p) => {
+        const due = new Date(p.dueDate);
+        return p.status !== 'paid' && due < now;
+      })
       .sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())
       .slice(0, 2)
       .map((p) => {
@@ -270,14 +274,17 @@ export default function Dashboard() {
           value={formatCurrency(stats.pending)}
           icon={<Clock className="w-5 h-5 text-amber-700" />}
           color="bg-amber-100"
-          trend={`${paymentTerms.filter(p => p.status === 'pending' || p.status === 'invoiced').length} 笔待收`}
+          trend={`${paymentTerms.filter(p => p.status !== 'paid').length} 笔待收`}
         />
         <StatCard
           title="逾期欠款"
           value={formatCurrency(stats.overdue)}
           icon={<AlertTriangle className="w-5 h-5 text-red-700" />}
           color="bg-red-100"
-          trend={`${paymentTerms.filter(p => p.status === 'overdue').length} 笔逾期`}
+          trend={`${paymentTerms.filter(p => {
+            const due = new Date(p.dueDate);
+            return p.status !== 'paid' && due < new Date();
+          }).length} 笔逾期`}
         />
         <StatCard
           title="本月收入"

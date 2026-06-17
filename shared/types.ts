@@ -21,6 +21,8 @@ export interface Contract {
   endDate: string
   status: 'draft' | 'active' | 'completed' | 'terminated'
   description: string
+  confirmToken: string
+  confirmedAt?: string
   createdAt: string
   updatedAt: string
 }
@@ -61,6 +63,7 @@ export interface ProjectFile {
   fileName: string
   fileSize: number
   fileType: string
+  type: 'requirement' | 'deliverable' | 'other'
   uploadedBy: string
   uploadedAt: string
 }
